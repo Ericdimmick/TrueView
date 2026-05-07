@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 260">
+  <rect width="900" height="260" rx="34" fill="#f5faf8"/>
+  <g transform="translate(48 46)">
+    <rect width="168" height="168" rx="38" fill="#142321"/>
+    <path d="M43 90 84 55l41 35" fill="none" stroke="#f5fbf8" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M58 91v42h52V91" fill="none" stroke="#f5fbf8" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="84" cy="105" r="23" fill="none" stroke="#79d6dc" stroke-width="10"/>
+    <path d="m73 106 8 9 18-21" fill="none" stroke="#79d6dc" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M16 16c28-9 55-10 80-4" fill="none" stroke="#ffffff" stroke-opacity=".26" stroke-width="7" stroke-linecap="round"/>
+  </g>
+  <g fill="#142321" font-family="SF Pro Display, Helvetica Neue, Arial, sans-serif">
+    <text x="250" y="111" font-size="58" font-weight="800">TrueView</text>
+    <text x="253" y="158" font-size="25" font-weight="700">HOME INSPECTIONS</text>
+    <rect x="253" y="184" width="92" height="6" rx="3" fill="#0f6f79"/>
+  </g>
+</svg>

@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#f5faf8">
+    <title>TrueView Field Report</title>
+    <link rel="icon" href="icon.svg" type="image/svg+xml">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="stylesheet" href="styles.css?v=7">
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <header class="topbar glass">
+        <div class="brand">
+          <div class="brand-mark">IF</div>
+          <div>
+            <strong id="brandTitle">TrueView</strong>
+            <span id="propertyLine">New residential inspection</span>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button class="ghost-button" type="button" data-action="open-library">Reports</button>
+          <button class="ghost-button" type="button" data-action="save-progress">Save</button>
+          <button class="ghost-button" type="button" data-action="open-report">Report</button>
+          <button class="primary-button" type="button" data-action="share-pdf">Share PDF</button>
+        </div>
+      </header>
+
+      <main class="layout">
+        <aside class="glass sidebar">
+          <div class="sidebar-title">
+            <span>Sections</span>
+            <strong id="sectionProgress">0%</strong>
+          </div>
+          <div id="sectionList" class="section-list"></div>
+        </aside>
+
+        <section class="workbench">
+          <section class="glass property-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Field setup</p>
+                <h1>Residential Inspection</h1>
+                <span id="saveStatus" class="save-status">Saved locally</span>
+              </div>
+              <button class="ghost-button compact" type="button" data-action="new-report">New</button>
+            </div>
+            <div id="fieldDashboard" class="field-dashboard"></div>
+            <div id="propertyFields" class="property-grid"></div>
+            <div id="statusLegend" class="status-legend"></div>
+          </section>
+
+          <section id="sectionEditor" class="section-editor"></section>
+        </section>
+
+        <aside class="glass report-pane">
+          <div class="panel-heading slim">
+            <div>
+              <p class="eyebrow">Live report</p>
+              <h2>Summary</h2>
+            </div>
+            <button class="ghost-button compact" type="button" data-action="generate-pdf">PDF</button>
+          </div>
+          <div id="summaryCards" class="summary-cards"></div>
+          <div id="reportPreview" class="report-preview"></div>
+        </aside>
+      </main>
+
+      <nav class="mobile-nav glass" aria-label="Mobile field controls">
+        <button class="mobile-step-button" type="button" data-action="prev-section" aria-label="Previous section">
+          <span class="chevron left" aria-hidden="true"></span>
+        </button>
+        <button class="mobile-menu-button" type="button" data-action="open-mobile-menu" aria-label="Open field menu">
+          <span class="hamburger-icon" aria-hidden="true"><span></span></span>
+          <span>Menu</span>
+        </button>
+        <button class="mobile-step-button" type="button" data-action="next-section" aria-label="Next section">
+          <span class="chevron right" aria-hidden="true"></span>
+        </button>
+      </nav>
+    </div>
+
+    <div id="sheetBackdrop" class="sheet-backdrop" hidden></div>
+    <section id="observationSheet" class="sheet glass" hidden aria-modal="true" role="dialog"></section>
+    <section id="sectionDrawer" class="section-drawer glass" hidden></section>
+    <section id="reportDrawer" class="report-drawer glass" hidden></section>
+    <section id="libraryDrawer" class="library-drawer glass" hidden></section>
+    <section id="mobileMenuDrawer" class="mobile-menu-drawer glass" hidden aria-modal="true" role="dialog"></section>
+    <div id="toast" class="toast" hidden></div>
+    <div id="printRoot" class="print-root"></div>
+
+    <script src="app.js?v=7" defer></script>
+  </body>
+</html>
