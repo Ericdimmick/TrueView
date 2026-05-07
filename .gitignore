@@ -4,6 +4,7 @@ node_modules/
 # Build and static output directories
 dist/
 build/
+public/
 .next/
 out/
 .vercel/output/
@@ -58,3 +59,4 @@ Desktop.ini
 tmp/
 temp/
 *.tmp
+.vercel

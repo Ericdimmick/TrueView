@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "check": "node --check app.js && node --check offline-db.js && node --check sync-service.js && node --check server.js",
-    "build": "npm run check"
+    "build": "npm run check && node scripts/build-static.js"
   },
   "engines": {
     "node": ">=18"
