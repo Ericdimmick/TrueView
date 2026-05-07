@@ -1,0 +1,14 @@
+{
+  "name": "trueview-field-report",
+  "version": "0.8.0",
+  "private": true,
+  "description": "Offline-first TrueView home inspection field report app.",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check app.js && node --check offline-db.js && node --check sync-service.js && node --check server.js",
+    "build": "npm run check"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

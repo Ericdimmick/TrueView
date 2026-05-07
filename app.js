@@ -51,6 +51,30 @@ const SEVERITY_OPTIONS = [
   { value: "safety", label: "Safety Hazard" }
 ];
 
+const SECTION_BEHAVIOR = {
+  details: { sectionType: "details", templateId: "details", label: "Inspection Details", isRequired: true, isRepeatable: false },
+  roof: { sectionType: "roof", templateId: "roof", label: "Roof Section", isRequired: false, isRepeatable: true },
+  exterior: { sectionType: "exterior", templateId: "exterior", label: "Exterior Area", isRequired: false, isRepeatable: true },
+  garage: { sectionType: "garage", templateId: "garage", label: "Garage or Pole Barn", isRequired: false, isRepeatable: true },
+  attic: { sectionType: "attic", templateId: "attic", label: "Attic", isRequired: false, isRepeatable: true },
+  "master-bedroom": { sectionType: "bedroom", templateId: "bedroom", label: "Bedroom", isRequired: false, isRepeatable: true },
+  "bedroom-2": { sectionType: "bedroom", templateId: "bedroom", label: "Bedroom", isRequired: false, isRepeatable: true },
+  "bedroom-3": { sectionType: "bedroom", templateId: "bedroom", label: "Bedroom", isRequired: false, isRepeatable: true },
+  "bathroom-1": { sectionType: "bathroom", templateId: "bathroom", label: "Bathroom", isRequired: false, isRepeatable: true },
+  "half-bathroom-1": { sectionType: "half-bathroom", templateId: "half-bathroom", label: "Half Bathroom", isRequired: false, isRepeatable: true },
+  "living-area": { sectionType: "living-area", templateId: "living-area", label: "Living Area", isRequired: false, isRepeatable: true },
+  "dining-area": { sectionType: "dining-area", templateId: "dining-area", label: "Dining Area", isRequired: false, isRepeatable: true },
+  kitchen: { sectionType: "kitchen", templateId: "kitchen", label: "Kitchen", isRequired: false, isRepeatable: true },
+  "misc-interior": { sectionType: "misc-interior", templateId: "misc-interior", label: "Misc. Interior", isRequired: false, isRepeatable: false },
+  "basement-structure": { sectionType: "basement-structure", templateId: "basement-structure", label: "Basement, Crawlspace and Structure", isRequired: false, isRepeatable: true },
+  laundry: { sectionType: "laundry", templateId: "laundry", label: "Laundry Appliances", isRequired: false, isRepeatable: true },
+  electrical: { sectionType: "electrical", templateId: "electrical", label: "Electrical", isRequired: false, isRepeatable: true },
+  plumbing: { sectionType: "plumbing", templateId: "plumbing", label: "Plumbing", isRequired: false, isRepeatable: true },
+  hvac: { sectionType: "hvac", templateId: "hvac", label: "HVAC System", isRequired: false, isRepeatable: true },
+  "smoke-co": { sectionType: "smoke-co", templateId: "smoke-co", label: "Smoke and CO", isRequired: false, isRepeatable: false },
+  standards: { sectionType: "standards", templateId: "standards", label: "Standards of Practice", isRequired: true, isRepeatable: false }
+};
+
 const PROPERTY_FIELDS = [
   { key: "propertyAddress", label: "Property Address", wide: true, placeholder: "1046 Dunham St SE" },
   { key: "cityStateZip", label: "City, State ZIP", placeholder: "Grand Rapids, MI 49506" },
@@ -123,6 +147,12 @@ let library;
 let photoDb;
 let photoCache = new Map();
 let activeObservation = null;
+let sectionDrag = null;
+let suppressSectionClickUntil = 0;
+let localDeviceId = "";
+let offlineDbAvailable = false;
+let saveToDbTimer = null;
+let syncSummary = { pending: 0, failed: 0, conflicts: 0, syncing: 0, lastSyncedAt: "" };
 let toastTimer = null;
 let saveStatusTimer = null;
 
@@ -132,6 +162,7 @@ const fieldDashboard = document.getElementById("fieldDashboard");
 const propertyFields = document.getElementById("propertyFields");
 const statusLegend = document.getElementById("statusLegend");
 const saveStatus = document.getElementById("saveStatus");
+const syncIndicator = document.getElementById("syncIndicator");
 const sectionEditor = document.getElementById("sectionEditor");
 const summaryCards = document.getElementById("summaryCards");
 const reportPreview = document.getElementById("reportPreview");
@@ -141,17 +172,23 @@ const sectionDrawer = document.getElementById("sectionDrawer");
 const reportDrawer = document.getElementById("reportDrawer");
 const libraryDrawer = document.getElementById("libraryDrawer");
 const mobileMenuDrawer = document.getElementById("mobileMenuDrawer");
+const sectionManagerDrawer = document.getElementById("sectionManagerDrawer");
+const sectionActionPopover = document.getElementById("sectionActionPopover");
 const toast = document.getElementById("toast");
 const printRoot = document.getElementById("printRoot");
 
 boot();
 
 async function boot() {
-  library = loadLibrary();
+  await initOfflineDatabase();
+  library = await loadLibrary();
   state = getActiveReport();
   await initPhotoStorage();
   registerServiceWorker();
+  setupConnectivityListeners();
+  await refreshSyncSummary();
   render();
+  saveState({ mutationType: "boot-hydrate", skipQueue: true });
 }
 
 function createDefaultState() {
@@ -166,6 +203,10 @@ function createDefaultState() {
     exportFolderName: "",
     exportFolder: "",
     exportPdfPath: "",
+    reportStatus: "Draft",
+    syncStatus: "pending",
+    remoteId: "",
+    deviceId: "",
     currentSectionId: "roof",
     inspection: {
       propertyAddress: "",
@@ -413,9 +454,26 @@ function createSections() {
     }
   ];
 
-  return groups.map((section) => ({
-    ...section,
-    items: section.items.map((title, index) => createItem(section.id, title, index))
+  const now = new Date().toISOString();
+  return normalizeSectionOrder(groups.map((section, index) => {
+    const meta = getSectionBehavior(section.id, section.title);
+    return {
+      ...section,
+      sectionId: section.id,
+      sectionType: meta.sectionType,
+      templateId: meta.templateId,
+      displayName: section.title,
+      customDisplayName: true,
+      sortOrder: index + 1,
+      isRequired: meta.isRequired,
+      isRepeatable: meta.isRepeatable,
+      isApplicable: true,
+      isArchived: false,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: "",
+      items: section.items.map((title, itemIndex) => createItem(section.id, title, itemIndex))
+    };
   }));
 }
 
@@ -467,8 +525,181 @@ function createItem(sectionId, title, index) {
   };
 }
 
-function loadLibrary() {
+function getSectionBehavior(id, title = "") {
+  if (SECTION_BEHAVIOR[id]) return SECTION_BEHAVIOR[id];
+  const lowerTitle = String(title).toLowerCase();
+  if (lowerTitle.includes("bedroom")) return SECTION_BEHAVIOR["bedroom-2"];
+  if (lowerTitle.includes("bathroom") && lowerTitle.includes("half")) return SECTION_BEHAVIOR["half-bathroom-1"];
+  if (lowerTitle.includes("bathroom")) return SECTION_BEHAVIOR["bathroom-1"];
+  if (lowerTitle.includes("garage") || lowerTitle.includes("pole barn")) return SECTION_BEHAVIOR.garage;
+  if (lowerTitle.includes("attic")) return SECTION_BEHAVIOR.attic;
+  if (lowerTitle.includes("hvac")) return SECTION_BEHAVIOR.hvac;
+  if (lowerTitle.includes("electrical")) return SECTION_BEHAVIOR.electrical;
+  if (lowerTitle.includes("plumbing")) return SECTION_BEHAVIOR.plumbing;
+  if (lowerTitle.includes("kitchen")) return SECTION_BEHAVIOR.kitchen;
+  return {
+    sectionType: safeFileName(id || title || "section"),
+    templateId: safeFileName(id || title || "section"),
+    label: title || "Section",
+    isRequired: false,
+    isRepeatable: true
+  };
+}
+
+function normalizeSectionInstance(section, index = 0, fallback = null) {
+  const now = new Date().toISOString();
+  const base = fallback || section;
+  const meta = getSectionBehavior(section.templateId || section.sectionType || base.id || section.id, section.displayName || section.title || base.title);
+  const id = section.id || section.sectionId || uid("section");
+  const title = section.title || base.title || meta.label;
+  const displayName = section.displayName || section.title || title;
+  return {
+    ...base,
+    ...section,
+    id,
+    sectionId: section.sectionId || id,
+    sectionType: section.sectionType || meta.sectionType,
+    templateId: section.templateId || meta.templateId,
+    title,
+    displayName,
+    customDisplayName: section.customDisplayName !== undefined ? Boolean(section.customDisplayName) : true,
+    sortOrder: Number.isFinite(Number(section.sortOrder)) ? Number(section.sortOrder) : index + 1,
+    isRequired: section.isRequired !== undefined ? Boolean(section.isRequired) : Boolean(meta.isRequired),
+    isRepeatable: section.isRepeatable !== undefined ? Boolean(section.isRepeatable) : Boolean(meta.isRepeatable),
+    isApplicable: section.isApplicable !== undefined ? Boolean(section.isApplicable) : true,
+    isArchived: Boolean(section.isArchived),
+    createdAt: section.createdAt || now,
+    updatedAt: section.updatedAt || now,
+    deletedAt: section.deletedAt || "",
+    items: (section.items || base.items || []).map((item, itemIndex) => normalizeItem(item, id, itemIndex))
+  };
+}
+
+function normalizeItem(item, sectionId, index) {
+  return {
+    id: item.id || `${sectionId}-${index + 1}`,
+    title: item.title || `Item ${index + 1}`,
+    status: item.status || "",
+    condition: item.condition || "satisfactory",
+    observations: (item.observations || []).map(normalizeObservation)
+  };
+}
+
+function normalizeSectionOrder(sections) {
+  const ordered = [...sections].sort((a, b) => {
+    const orderA = Number.isFinite(Number(a.sortOrder)) ? Number(a.sortOrder) : 9999;
+    const orderB = Number.isFinite(Number(b.sortOrder)) ? Number(b.sortOrder) : 9999;
+    return orderA - orderB;
+  });
+  let numericCode = 1;
+  ordered.forEach((section, index) => {
+    section.sortOrder = index + 1;
+    section.updatedAt = section.updatedAt || new Date().toISOString();
+    if (section.sectionType === "standards" || section.templateId === "standards") {
+      section.code = "SOP";
+    } else if (!section.isArchived) {
+      section.code = String(numericCode);
+      numericCode += 1;
+    }
+  });
+  return ordered;
+}
+
+function getActiveSections(report = state) {
+  return normalizeSectionOrder((report.sections || []).filter((section) => !section.isArchived));
+}
+
+function getArchivedSections(report = state) {
+  return normalizeSectionOrder((report.sections || []).filter((section) => section.isArchived));
+}
+
+function getSectionTitle(section) {
+  return section.displayName || section.title || "Section";
+}
+
+function getSectionTemplateCatalog() {
+  const defaults = createSections();
+  const seen = new Set();
+  const templates = [];
+  defaults.forEach((section) => {
+    if (seen.has(section.templateId)) return;
+    seen.add(section.templateId);
+    templates.push({
+      templateId: section.templateId,
+      sectionType: section.sectionType,
+      label: getSectionBehavior(section.id, section.title).label || getSectionTitle(section),
+      subtitle: section.subtitle,
+      items: section.items.map((item) => item.title),
+      isRequired: section.isRequired,
+      isRepeatable: section.isRepeatable
+    });
+  });
+  return templates;
+}
+
+function getSectionTemplate(templateId) {
+  return getSectionTemplateCatalog().find((template) => template.templateId === templateId) || getSectionTemplateCatalog()[0];
+}
+
+function createSectionFromTemplate(templateId, options = {}) {
+  const template = getSectionTemplate(templateId);
+  const id = options.id || uid(`section-${template.templateId}`);
+  const now = new Date().toISOString();
+  const title = options.displayName || nextSectionDisplayName(template.templateId, template.label);
+  return normalizeSectionInstance({
+    id,
+    sectionId: id,
+    sectionType: template.sectionType,
+    templateId: template.templateId,
+    code: "",
+    title: template.label,
+    displayName: title,
+    customDisplayName: Boolean(options.displayName),
+    subtitle: template.subtitle,
+    sortOrder: state.sections.length + 1,
+    isRequired: false,
+    isRepeatable: template.isRepeatable,
+    isApplicable: true,
+    isArchived: false,
+    createdAt: now,
+    updatedAt: now,
+    deletedAt: "",
+    items: template.items.map((itemTitle, index) => createItem(id, itemTitle, index))
+  });
+}
+
+function nextSectionDisplayName(templateId, fallbackLabel) {
+  const activeMatches = getActiveSections().filter((section) => section.templateId === templateId);
+  const label = fallbackLabel || templateId;
+  if (!activeMatches.length) return label;
+  return `${label} ${activeMatches.length + 1}`;
+}
+
+async function initOfflineDatabase() {
   try {
+    if (!window.TrueViewOfflineDB || !("indexedDB" in window)) return;
+    await window.TrueViewOfflineDB.open();
+    localDeviceId = window.TrueViewOfflineDB.getDeviceId();
+    offlineDbAvailable = true;
+    await window.TrueViewOfflineDB.saveSectionTemplates(getSectionTemplateCatalog());
+  } catch (error) {
+    console.warn(error);
+    offlineDbAvailable = false;
+  }
+}
+
+async function loadLibrary() {
+  try {
+    if (offlineDbAvailable) {
+      const dbLibrary = await window.TrueViewOfflineDB.loadLibrary();
+      if (dbLibrary && Array.isArray(dbLibrary.reports) && dbLibrary.reports.length) {
+        return {
+          activeReportId: dbLibrary.activeReportId,
+          reports: dbLibrary.reports.map((report) => migrateState(report))
+        };
+      }
+    }
+
     const savedLibrary = localStorage.getItem(LIBRARY_KEY);
     if (savedLibrary) {
       const parsedLibrary = JSON.parse(savedLibrary);
@@ -503,12 +734,14 @@ function migrateState(saved) {
   const fresh = createDefaultState();
   const sectionMap = new Map((saved.sections || []).map((section) => [section.id, section]));
 
-  fresh.sections = fresh.sections.map((section) => {
+  const defaultSections = fresh.sections.map((section, index) => {
     const existingSection = sectionMap.get(section.id);
-    if (!existingSection) return section;
+    if (!existingSection) return normalizeSectionInstance(section, index);
     const itemMap = new Map((existingSection.items || []).map((item) => [item.id, item]));
-    return {
-      ...section,
+    return normalizeSectionInstance({
+      ...existingSection,
+      title: existingSection.title || section.title,
+      subtitle: existingSection.subtitle || section.subtitle,
       items: section.items.map((item) => {
         const existingItem = itemMap.get(item.id);
         if (!existingItem) return item;
@@ -519,8 +752,15 @@ function migrateState(saved) {
           observations: (existingItem.observations || []).map(normalizeObservation)
         };
       })
-    };
+    }, index, section);
   });
+
+  const defaultIds = new Set(fresh.sections.map((section) => section.id));
+  const addedSections = (saved.sections || [])
+    .filter((section) => !defaultIds.has(section.id))
+    .map((section, index) => normalizeSectionInstance(section, defaultSections.length + index));
+
+  const sections = normalizeSectionOrder([...defaultSections, ...addedSections]);
 
   const inspection = { ...fresh.inspection, ...saved.inspection };
   if (!inspection.companyName || inspection.companyName === "My Inspection Company" || inspection.companyName === "Inspection Company") {
@@ -538,8 +778,12 @@ function migrateState(saved) {
     exportFolderName: saved.exportFolderName || "",
     exportFolder: saved.exportFolder || "",
     exportPdfPath: saved.exportPdfPath || "",
+    reportStatus: saved.reportStatus || saved.status || "Draft",
+    syncStatus: saved.syncStatus || "pending",
+    remoteId: saved.remoteId || "",
+    deviceId: saved.deviceId || "",
     inspection,
-    sections: fresh.sections,
+    sections,
     currentSectionId: saved.currentSectionId || fresh.currentSectionId
   };
 }
@@ -565,11 +809,19 @@ function getActiveReport() {
 
 function saveState(options = {}) {
   const now = new Date().toISOString();
+  state.sections = normalizeSectionOrder(state.sections || []);
   state.updatedAt = now;
   state.lastSavedAt = now;
+  state.deviceId = state.deviceId || localDeviceId;
+  if (!["Ready for Review", "Finalized", "Conflict"].includes(state.reportStatus)) {
+    state.reportStatus = getReportStatus(state);
+  }
+  state.syncStatus = "pending";
   upsertCurrentReport();
   persistLibrary();
-  updateSaveStatus(options.manual ? "Saved now" : "Saved locally");
+  scheduleOfflineReportSave(options);
+  updateSaveStatus(options.manual ? "Saved now" : getLocalSaveLabel());
+  refreshSyncSummary();
 }
 
 function upsertCurrentReport() {
@@ -582,6 +834,98 @@ function upsertCurrentReport() {
 function persistLibrary() {
   localStorage.setItem(LIBRARY_KEY, JSON.stringify(library));
   localStorage.setItem(STORE_KEY, JSON.stringify(state));
+}
+
+function scheduleOfflineReportSave(options = {}) {
+  if (!offlineDbAvailable || !window.TrueViewOfflineDB) return;
+  clearTimeout(saveToDbTimer);
+  const delay = options.manual || options.mutationType?.startsWith("section-") ? 80 : 420;
+  saveToDbTimer = setTimeout(async () => {
+    try {
+      await window.TrueViewOfflineDB.saveReport(state, {
+        mutationType: options.skipQueue ? "local-save" : options.mutationType || "report-upsert",
+        queue: !options.skipQueue
+      });
+      await window.TrueViewOfflineDB.saveLibrary(library, { queue: false });
+      await refreshSyncSummary();
+      updateSaveStatus(getLocalSaveLabel());
+    } catch (error) {
+      console.warn(error);
+      state.syncStatus = "failed";
+      updateSaveStatus("Sync failed - saved in fallback storage");
+    }
+  }, delay);
+}
+
+function getLocalSaveLabel() {
+  if (!navigator.onLine) return "Offline - saved locally";
+  if (syncSummary.failed) return "Sync failed - saved locally";
+  if (syncSummary.pending) return "Sync pending - saved locally";
+  return "Saved locally";
+}
+
+function setupConnectivityListeners() {
+  window.addEventListener("online", () => {
+    showToast("Back online. Local changes are ready to sync.");
+    refreshSyncSummary(true);
+  });
+  window.addEventListener("offline", () => {
+    showToast("Offline mode. Changes will stay saved locally.");
+    updateSyncIndicator();
+    updateSaveStatus("Offline - saved locally");
+  });
+}
+
+async function refreshSyncSummary(attemptSync = false) {
+  try {
+    if (offlineDbAvailable && window.TrueViewOfflineDB) {
+      syncSummary = await window.TrueViewOfflineDB.getSyncSummary();
+    }
+    if (attemptSync && window.TrueViewSync) {
+      const result = await window.TrueViewSync.attemptSync();
+      syncSummary = { ...syncSummary, ...result };
+    }
+  } catch (error) {
+    console.warn(error);
+  }
+  updateSyncIndicator();
+}
+
+function updateSyncIndicator() {
+  if (!syncIndicator) return;
+  const pending = syncSummary.pending || 0;
+  const failed = syncSummary.failed || 0;
+  const conflicts = syncSummary.conflicts || 0;
+  const online = navigator.onLine;
+  const cloudConfigured = window.TrueViewSync ? window.TrueViewSync.isConfigured() : false;
+  const compact = window.matchMedia("(max-width: 520px)").matches;
+  let label = online ? "Online" : "Offline";
+  if (!online) label = `Offline | ${pending} pending`;
+  else if (conflicts) label = `Conflict | ${conflicts}`;
+  else if (failed) label = `Sync failed | ${failed}`;
+  else if (pending) label = cloudConfigured ? `Sync pending | ${pending}` : `Cloud sync not configured | ${pending}`;
+  else label = "All changes saved";
+  const compactLabel = compact
+    ? (!online ? `Offline | ${pending}` : conflicts ? `Conflict | ${conflicts}` : failed ? `Failed | ${failed}` : pending ? `Local | ${pending}` : "Saved")
+    : label;
+  syncIndicator.textContent = compactLabel;
+  syncIndicator.title = label;
+  syncIndicator.dataset.status = online ? (pending ? "pending" : "synced") : "offline";
+}
+
+function getReportStatus(report) {
+  const totals = getReportTotals(report);
+  const observations = getReportSeverityCounts(report).total;
+  if (report.exportedAt) return "Finalized";
+  if (totals.complete || observations) return "In Progress";
+  return "Draft";
+}
+
+function syncStatusLabel(value) {
+  if (value === "synced") return "Synced";
+  if (value === "failed") return "Sync Failed";
+  if (value === "conflict") return "Conflict";
+  return "Sync Pending";
 }
 
 async function initPhotoStorage() {
@@ -614,8 +958,16 @@ async function initPhotoStorage() {
   records.forEach((record) => photoCache.set(record.id, record.dataUrl));
 }
 
-async function savePhoto(id, dataUrl) {
+async function savePhoto(id, dataUrl, metadata = {}) {
   photoCache.set(id, dataUrl);
+  if (offlineDbAvailable && window.TrueViewOfflineDB) {
+    window.TrueViewOfflineDB.savePhotoMetadata({
+      id,
+      dataUrl,
+      reportId: state.id,
+      ...metadata
+    }).catch((error) => console.warn(error));
+  }
   if (!photoDb) return;
   await new Promise((resolve) => {
     const transaction = photoDb.transaction(PHOTO_STORE, "readwrite");
@@ -627,6 +979,9 @@ async function savePhoto(id, dataUrl) {
 
 async function deletePhoto(id) {
   photoCache.delete(id);
+  if (offlineDbAvailable && window.TrueViewOfflineDB) {
+    window.TrueViewOfflineDB.deletePhotoMetadata(id).catch((error) => console.warn(error));
+  }
   if (!photoDb) return;
   await new Promise((resolve) => {
     const transaction = photoDb.transaction(PHOTO_STORE, "readwrite");
@@ -666,6 +1021,7 @@ function renderHeader() {
   }
   const progress = Math.round(getOverallProgress() * 100);
   document.getElementById("sectionProgress").textContent = `${progress}%`;
+  updateSyncIndicator();
   updateSaveStatus("Saved locally");
 }
 
@@ -694,7 +1050,7 @@ function renderDashboard() {
       <div>
         <p class="eyebrow">Field progress</p>
         <strong>${totals.complete}/${totals.total} items filled</strong>
-        <span>${escapeHtml(current.title)} is active</span>
+        <span>${escapeHtml(getSectionTitle(current))} is active</span>
       </div>
     </div>
     <div class="dashboard-metric maintenance">
@@ -792,14 +1148,15 @@ function renderStatusLegend() {
 }
 
 function renderSectionList() {
-  sectionList.innerHTML = state.sections.map((section) => {
+  sectionList.innerHTML = getActiveSections().map((section) => {
     const progress = getSectionProgress(section);
     const active = section.id === state.currentSectionId ? " active" : "";
+    const applicable = section.isApplicable ? "" : " not-applicable";
     return `
-      <button class="section-button${active}" type="button" data-action="choose-section" data-section-id="${section.id}">
+      <button class="section-button${active}${applicable}" type="button" data-action="choose-section" data-section-id="${section.id}" aria-label="${escapeAttr(getSectionTitle(section))}. Long press and drag to reorder.">
         <span class="section-code">${escapeHtml(section.code)}</span>
-        <span class="section-name">${escapeHtml(section.title)}</span>
-        <span class="section-meta">${Math.round(progress * 100)}%</span>
+        <span class="section-name">${escapeHtml(getSectionTitle(section))}</span>
+        <span class="section-meta">${section.isApplicable ? `${Math.round(progress * 100)}%` : "N/A"}</span>
       </button>
     `;
   }).join("");
@@ -812,23 +1169,92 @@ function renderSectionEditor() {
 
   sectionEditor.innerHTML = `
     <section class="glass section-card">
+      ${renderSectionMenuButton(section)}
       <div class="section-headline">
         <div>
           <p class="eyebrow">Section ${escapeHtml(section.code)}</p>
-          <h2>${escapeHtml(section.title)}</h2>
+          <h2>${escapeHtml(getSectionTitle(section))}</h2>
           <p>${escapeHtml(section.subtitle)}</p>
         </div>
         <div class="section-stats">
-          <span class="stat-pill">${stats.complete}/${stats.total} filled</span>
+          ${section.isApplicable ? `<span class="stat-pill">${stats.complete}/${stats.total} filled</span>` : `<span class="stat-pill not-applicable-pill">Not Applicable</span>`}
           <span class="stat-pill">${stats.observations} observations</span>
           <button class="ghost-button compact" type="button" data-action="mark-section-inspected">Mark IN</button>
+          <button class="ghost-button compact" type="button" data-action="toggle-section-applicable" data-section-id="${escapeAttr(section.id)}">${section.isApplicable ? "Mark N/A" : "Make Applicable"}</button>
         </div>
       </div>
+      ${section.isApplicable ? "" : `<div class="section-note-banner">This section is marked Not Applicable for this property. Its data stays saved and can be restored at any time.</div>`}
       <div class="items">
         ${section.items.map((item) => renderItem(section, item)).join("")}
       </div>
     </section>
   `;
+}
+
+function renderSectionMenuButton(section) {
+  return `
+    <button class="section-actions-button" type="button" data-action="open-section-menu" data-section-id="${escapeAttr(section.id)}" aria-label="Open actions for ${escapeAttr(getSectionTitle(section))}">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M9.2 3.2 8.7 5.5c-.5.2-.9.4-1.3.7L5.2 5.4 3.1 9l1.8 1.5a7.9 7.9 0 0 0 0 1.5L3.1 13.5l2.1 3.6 2.2-.8c.4.3.9.5 1.3.7l.5 2.3h4.2l.5-2.3c.5-.2.9-.4 1.3-.7l2.2.8 2.1-3.6-1.8-1.5a7.9 7.9 0 0 0 0-1.5L19.5 9l-2.1-3.6-2.2.8c-.4-.3-.9-.5-1.3-.7l-.5-2.3H9.2Z"></path>
+        <circle cx="11.3" cy="11.25" r="3.15"></circle>
+      </svg>
+    </button>
+  `;
+}
+
+function renderSectionActionPopover(sectionId, anchor) {
+  const section = state.sections.find((entry) => entry.id === sectionId);
+  if (!section) return;
+  const active = getActiveSections();
+  const index = active.findIndex((entry) => entry.id === section.id);
+
+  sectionActionPopover.innerHTML = `
+    <div class="section-action-title">
+      <span>Section Actions</span>
+      <strong>${escapeHtml(getSectionTitle(section))}</strong>
+    </div>
+    <div class="section-action-list">
+      <button type="button" data-action="open-section-manager">
+        <span>Add Area/System</span>
+        <small>Insert another report section</small>
+      </button>
+      <button type="button" data-action="rename-section" data-section-id="${escapeAttr(section.id)}">
+        <span>Rename</span>
+        <small>Use a custom field name</small>
+      </button>
+      <button type="button" data-action="duplicate-section" data-section-id="${escapeAttr(section.id)}">
+        <span>Duplicate</span>
+        <small>Copy this section layout</small>
+      </button>
+      <button type="button" data-action="move-section-up" data-section-id="${escapeAttr(section.id)}" ${index <= 0 ? "disabled" : ""}>
+        <span>Move Up</span>
+        <small>Reorder this report</small>
+      </button>
+      <button type="button" data-action="move-section-down" data-section-id="${escapeAttr(section.id)}" ${index >= active.length - 1 ? "disabled" : ""}>
+        <span>Move Down</span>
+        <small>Reorder this report</small>
+      </button>
+      ${section.isRequired ? "" : `
+        <button class="danger" type="button" data-action="archive-section" data-section-id="${escapeAttr(section.id)}">
+          <span>Remove</span>
+          <small>Archive without losing data</small>
+        </button>
+      `}
+      </div>
+  `;
+  positionSectionActionPopover(anchor);
+  sheetBackdrop.hidden = false;
+  sectionActionPopover.hidden = false;
+}
+
+function positionSectionActionPopover(anchor) {
+  const rect = anchor.getBoundingClientRect();
+  const popoverWidth = Math.min(264, window.innerWidth - 24);
+  const left = Math.max(12, Math.min(window.innerWidth - popoverWidth - 12, rect.right - popoverWidth));
+  const maxTop = Math.max(12, window.innerHeight - 356);
+  const top = Math.max(12, Math.min(maxTop, rect.bottom + 10));
+  sectionActionPopover.style.setProperty("--section-action-left", `${left}px`);
+  sectionActionPopover.style.setProperty("--section-action-top", `${top}px`);
 }
 
 function renderItem(section, item) {
@@ -936,7 +1362,7 @@ function renderPreview() {
   reportPreview.innerHTML = observations.slice(0, 10).map((entry) => `
     <article class="preview-section ${escapeHtml(entry.observation.severity)}">
       <strong>${escapeHtml(entry.observation.title || "Untitled observation")}</strong>
-      <p>${escapeHtml(entry.section.title)} | ${escapeHtml(entry.item.title)} | ${escapeHtml(getSeverity(entry.observation.severity).label)}</p>
+      <p>${escapeHtml(getSectionTitle(entry.section))} | ${escapeHtml(entry.item.title)} | ${escapeHtml(getSeverity(entry.observation.severity).label)}</p>
     </article>
   `).join("");
 }
@@ -950,7 +1376,7 @@ function renderObservationSheet() {
   observationSheet.innerHTML = `
     <div class="sheet-header">
       <div>
-        <p class="eyebrow">${escapeHtml(section.title)} | ${escapeHtml(item.title)}</p>
+        <p class="eyebrow">${escapeHtml(getSectionTitle(section))} | ${escapeHtml(item.title)}</p>
         <h2>${activeObservation.isNew ? "Add Observation" : "Edit Observation"}</h2>
       </div>
       <button class="ghost-button compact" type="button" data-action="close-sheet">Close</button>
@@ -1037,16 +1463,20 @@ function renderSectionDrawer() {
         <p class="eyebrow">Jump to</p>
         <h2>Sections</h2>
       </div>
-      <button class="ghost-button compact" type="button" data-action="close-sheet">Close</button>
+      <div class="drawer-header-actions">
+        <button class="ghost-button compact" type="button" data-action="open-section-manager">Add</button>
+        <button class="ghost-button compact" type="button" data-action="close-sheet">Close</button>
+      </div>
     </div>
     <div class="section-list">
-      ${state.sections.map((section) => {
+      ${getActiveSections().map((section) => {
         const active = section.id === state.currentSectionId ? " active" : "";
+        const applicable = section.isApplicable ? "" : " not-applicable";
         return `
-          <button class="section-button${active}" type="button" data-action="choose-section" data-section-id="${section.id}">
+          <button class="section-button${active}${applicable}" type="button" data-action="choose-section" data-section-id="${section.id}" aria-label="${escapeAttr(getSectionTitle(section))}. Long press and drag to reorder.">
             <span class="section-code">${escapeHtml(section.code)}</span>
-            <span class="section-name">${escapeHtml(section.title)}</span>
-            <span class="section-meta">${Math.round(getSectionProgress(section) * 100)}%</span>
+            <span class="section-name">${escapeHtml(getSectionTitle(section))}</span>
+            <span class="section-meta">${section.isApplicable ? `${Math.round(getSectionProgress(section) * 100)}%` : "N/A"}</span>
           </button>
         `;
       }).join("")}
@@ -1110,7 +1540,7 @@ function renderMobileMenuDrawer() {
     <div class="sheet-header">
       <div>
         <p class="eyebrow">Field menu</p>
-        <h2>${escapeHtml(current.title)}</h2>
+        <h2>${escapeHtml(getSectionTitle(current))}</h2>
       </div>
       <button class="ghost-button compact" type="button" data-action="close-sheet">Close</button>
     </div>
@@ -1153,6 +1583,77 @@ function renderMobileMenuDrawer() {
   sheetBackdrop.hidden = false;
 }
 
+function renderSectionManagerDrawer() {
+  const templates = getSectionTemplateCatalog().filter((template) => !template.isRequired);
+  const archived = getArchivedSections();
+  sectionManagerDrawer.innerHTML = `
+    <div class="sheet-header">
+      <div>
+        <p class="eyebrow">Customize property</p>
+        <h2>Add or Restore Area/System</h2>
+      </div>
+      <button class="ghost-button compact" type="button" data-action="close-sheet">Close</button>
+    </div>
+    <div class="section-manager-grid">
+      <label class="field">
+        <span>Section Type</span>
+        <select data-section-template>
+          ${templates.map((template) => `<option value="${escapeAttr(template.templateId)}">${escapeHtml(template.label)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="field">
+        <span>Custom Name</span>
+        <input data-section-display-name placeholder="Auto-name, or type Primary Bedroom">
+      </label>
+      <button class="primary-button" type="button" data-action="create-section-from-template">Add Section</button>
+    </div>
+    <div class="archived-sections">
+      <p class="eyebrow">Removed sections</p>
+      ${archived.length ? archived.map((section) => `
+        <article class="archived-section-row">
+          <div>
+            <strong>${escapeHtml(getSectionTitle(section))}</strong>
+            <span>${escapeHtml(section.deletedAt ? `Removed ${formatDate(section.deletedAt)}` : "Archived locally")}</span>
+          </div>
+          <button class="ghost-button compact" type="button" data-action="restore-section" data-section-id="${escapeAttr(section.id)}">Restore</button>
+        </article>
+      `).join("") : `<div class="empty-state">No removed optional sections.</div>`}
+    </div>
+  `;
+  sectionManagerDrawer.hidden = false;
+  sheetBackdrop.hidden = false;
+}
+
+function renderSectionRenameDrawer(sectionId) {
+  const section = findSection(sectionId);
+  if (!section) return;
+  closeOverlays();
+  sectionManagerDrawer.innerHTML = `
+    <div class="sheet-header">
+      <div>
+        <p class="eyebrow">Section name</p>
+        <h2>Rename Area/System</h2>
+      </div>
+      <button class="ghost-button compact" type="button" data-action="close-sheet">Close</button>
+    </div>
+    <div class="section-rename-form">
+      <label class="field">
+        <span>Display Name</span>
+        <input data-section-rename-input value="${escapeAttr(getSectionTitle(section))}" placeholder="Primary Bedroom">
+      </label>
+      <div class="sheet-actions">
+        <button class="ghost-button" type="button" data-action="close-sheet">Cancel</button>
+        <button class="primary-button" type="button" data-action="save-section-rename" data-section-id="${escapeAttr(section.id)}">Save Name</button>
+      </div>
+    </div>
+  `;
+  sectionManagerDrawer.hidden = false;
+  sheetBackdrop.hidden = false;
+  setTimeout(() => {
+    sectionManagerDrawer.querySelector("[data-section-rename-input]")?.focus();
+  }, 30);
+}
+
 function renderLibraryRow(report) {
   const title = getReportTitle(report);
   const subtitle = getReportSubtitle(report);
@@ -1167,7 +1668,8 @@ function renderLibraryRow(report) {
       <div class="library-row-main">
         <strong>${escapeHtml(title)}</strong>
         <span>${escapeHtml(subtitle)}</span>
-        <small>${totals.complete}/${totals.total} filled | ${counts.total} observations | Saved ${formatDate(report.lastSavedAt || report.updatedAt)}</small>
+        <small>${escapeHtml(getReportStatus(report))} | ${escapeHtml(syncStatusLabel(report.syncStatus))} | ${totals.complete}/${totals.total} filled | ${counts.total} observations</small>
+        <small>Saved ${formatDate(report.lastSavedAt || report.updatedAt)}</small>
         <small>${escapeHtml(exportLine)}</small>
       </div>
       <div class="library-row-actions">
@@ -1186,6 +1688,7 @@ document.addEventListener("click", async (event) => {
   const fromMobileMenu = Boolean(target.closest("#mobileMenuDrawer"));
 
   if (action === "choose-section") {
+    if (Date.now() < suppressSectionClickUntil) return;
     state.currentSectionId = target.dataset.sectionId;
     saveState();
     closeOverlays();
@@ -1233,6 +1736,68 @@ document.addEventListener("click", async (event) => {
 
   if (action === "close-sheet") {
     closeOverlays();
+    return;
+  }
+
+  if (action === "open-section-manager") {
+    closeOverlays();
+    renderSectionManagerDrawer();
+    return;
+  }
+
+  if (action === "open-section-menu") {
+    closeOverlays();
+    renderSectionActionPopover(target.dataset.sectionId, target);
+    return;
+  }
+
+  if (action === "create-section-from-template") {
+    createSectionFromManager();
+    return;
+  }
+
+  if (action === "rename-section") {
+    closeOverlays();
+    renderSectionRenameDrawer(target.dataset.sectionId);
+    return;
+  }
+
+  if (action === "save-section-rename") {
+    saveSectionRename(target.dataset.sectionId);
+    return;
+  }
+
+  if (action === "duplicate-section") {
+    closeOverlays();
+    duplicateSection(target.dataset.sectionId);
+    return;
+  }
+
+  if (action === "move-section-up") {
+    closeOverlays();
+    moveSectionInstance(target.dataset.sectionId, -1);
+    return;
+  }
+
+  if (action === "move-section-down") {
+    closeOverlays();
+    moveSectionInstance(target.dataset.sectionId, 1);
+    return;
+  }
+
+  if (action === "toggle-section-applicable") {
+    toggleSectionApplicable(target.dataset.sectionId);
+    return;
+  }
+
+  if (action === "archive-section") {
+    closeOverlays();
+    archiveSection(target.dataset.sectionId);
+    return;
+  }
+
+  if (action === "restore-section") {
+    restoreSection(target.dataset.sectionId);
     return;
   }
 
@@ -1399,7 +1964,12 @@ document.addEventListener("change", async (event) => {
     for (const file of files) {
       const dataUrl = await resizeImageFile(file);
       const id = uid("photo");
-      await savePhoto(id, dataUrl);
+      await savePhoto(id, dataUrl, {
+        usage: "observation",
+        sectionId: activeObservation.sectionId,
+        itemId: activeObservation.itemId,
+        observationId: activeObservation.draft.id
+      });
       activeObservation.draft.photoIds.push(id);
       activeObservation.addedPhotoIds.push(id);
     }
@@ -1415,7 +1985,7 @@ document.addEventListener("change", async (event) => {
     const oldId = state.inspection[setupPhotoKey];
     const dataUrl = await resizeImageFile(file, setupPhotoKey === "logoPhotoId" ? 900 : 1800);
     const id = uid("setup");
-    await savePhoto(id, dataUrl);
+    await savePhoto(id, dataUrl, { usage: setupPhotoKey });
     state.inspection[setupPhotoKey] = id;
     if (oldId) await deletePhoto(oldId);
     saveState();
@@ -1425,6 +1995,85 @@ document.addEventListener("change", async (event) => {
 });
 
 sheetBackdrop.addEventListener("click", closeOverlays);
+document.addEventListener("pointerdown", handleSectionPointerDown);
+document.addEventListener("pointermove", handleSectionPointerMove);
+document.addEventListener("pointerup", finishSectionDrag);
+document.addEventListener("pointercancel", finishSectionDrag);
+document.addEventListener("contextmenu", preventSectionContextMenu);
+
+function handleSectionPointerDown(event) {
+  const button = event.target.closest(".section-button[data-section-id]");
+  if (!button || event.button > 0) return;
+  const sectionId = button.dataset.sectionId;
+  button.setPointerCapture?.(event.pointerId);
+  sectionDrag = {
+    id: sectionId,
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    active: false,
+    moved: false,
+    source: button,
+    timer: window.setTimeout(() => startSectionDrag(button), 360)
+  };
+}
+
+function handleSectionPointerMove(event) {
+  if (!sectionDrag || event.pointerId !== sectionDrag.pointerId) return;
+  const distance = Math.hypot(event.clientX - sectionDrag.startX, event.clientY - sectionDrag.startY);
+  if (!sectionDrag.active && distance > 28) {
+    clearTimeout(sectionDrag.timer);
+    sectionDrag = null;
+    return;
+  }
+  if (!sectionDrag.active) return;
+  event.preventDefault();
+  sectionDrag.moved = true;
+  const over = document.elementFromPoint(event.clientX, event.clientY)?.closest(".section-button[data-section-id]");
+  if (!over || over.dataset.sectionId === sectionDrag.id) return;
+  if (reorderActiveSections(sectionDrag.id, over.dataset.sectionId)) {
+    state.currentSectionId = sectionDrag.id;
+    renderSectionList();
+    if (!sectionDrawer.hidden) renderSectionDrawer();
+    const currentButton = document.querySelector(`.section-button[data-section-id="${cssEscape(sectionDrag.id)}"]`);
+    currentButton?.classList.add("dragging");
+  }
+}
+
+function startSectionDrag(button) {
+  if (!sectionDrag) return;
+  sectionDrag.active = true;
+  button.classList.add("dragging");
+  document.body.classList.add("section-drag-active");
+  showToast("Drag to reorder section.");
+}
+
+function finishSectionDrag() {
+  if (!sectionDrag) return;
+  clearTimeout(sectionDrag.timer);
+  const wasActive = sectionDrag.active;
+  document.body.classList.remove("section-drag-active");
+  document.querySelectorAll(".section-button.dragging").forEach((button) => button.classList.remove("dragging"));
+  sectionDrag = null;
+  if (wasActive) {
+    suppressSectionClickUntil = Date.now() + 500;
+    normalizeSectionOrder(state.sections);
+    saveState({ manual: true, mutationType: "section-drag-reorder" });
+    render();
+    showToast("Section order saved.");
+  }
+}
+
+function preventSectionContextMenu(event) {
+  if (event.target.closest(".section-button[data-section-id]")) {
+    event.preventDefault();
+  }
+}
+
+function cssEscape(value) {
+  if (window.CSS && CSS.escape) return CSS.escape(value);
+  return String(value).replace(/"/g, '\\"');
+}
 
 function createNewReport() {
   saveState();
@@ -1460,6 +2109,9 @@ async function deleteSavedReport(reportId) {
   for (const id of getReportPhotoIds(report)) {
     await deletePhoto(id);
   }
+  if (offlineDbAvailable && window.TrueViewOfflineDB) {
+    await window.TrueViewOfflineDB.deleteReport(reportId).catch((error) => console.warn(error));
+  }
 
   library.reports = library.reports.filter((entry) => entry.id !== reportId);
   if (!library.reports.length) {
@@ -1475,6 +2127,128 @@ async function deleteSavedReport(reportId) {
   render();
   renderLibraryDrawer();
   showToast("Report deleted.");
+}
+
+function createSectionFromManager() {
+  const templateSelect = sectionManagerDrawer.querySelector("[data-section-template]");
+  const nameInput = sectionManagerDrawer.querySelector("[data-section-display-name]");
+  const templateId = templateSelect ? templateSelect.value : "";
+  const displayName = nameInput ? nameInput.value.trim() : "";
+  const section = createSectionFromTemplate(templateId, { displayName });
+  state.sections.push(section);
+  normalizeSectionOrder(state.sections);
+  state.currentSectionId = section.id;
+  closeOverlays();
+  saveState({ manual: true, mutationType: "section-add" });
+  render();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+  showToast(`${getSectionTitle(section)} added.`);
+}
+
+function renameSection(sectionId) {
+  const section = findSection(sectionId);
+  if (!section) return;
+  const input = sectionManagerDrawer.querySelector("[data-section-rename-input]");
+  const trimmed = input ? input.value.trim() : "";
+  if (!trimmed) return;
+  section.displayName = trimmed;
+  section.customDisplayName = true;
+  section.updatedAt = new Date().toISOString();
+  closeOverlays();
+  saveState({ manual: true, mutationType: "section-rename" });
+  render();
+  showToast("Section renamed.");
+}
+
+function saveSectionRename(sectionId) {
+  renameSection(sectionId);
+}
+
+function duplicateSection(sectionId) {
+  const section = findSection(sectionId);
+  if (!section) return;
+  const duplicate = createSectionFromTemplate(section.templateId || section.sectionType, {
+    displayName: nextSectionDisplayName(section.templateId || section.sectionType, getSectionBehavior(section.id, section.title).label)
+  });
+  duplicate.subtitle = section.subtitle;
+  duplicate.items = section.items.map((item, index) => createItem(duplicate.id, item.title, index));
+  const index = state.sections.findIndex((entry) => entry.id === section.id);
+  state.sections.splice(index + 1, 0, duplicate);
+  normalizeSectionOrder(state.sections);
+  state.currentSectionId = duplicate.id;
+  saveState({ manual: true, mutationType: "section-duplicate" });
+  render();
+  showToast(`${getSectionTitle(duplicate)} duplicated.`);
+}
+
+function moveSectionInstance(sectionId, direction) {
+  const active = getActiveSections();
+  const index = active.findIndex((section) => section.id === sectionId);
+  const nextIndex = Math.min(active.length - 1, Math.max(0, index + direction));
+  if (index < 0 || nextIndex === index) return;
+  reorderActiveSections(sectionId, active[nextIndex].id);
+  saveState({ manual: true, mutationType: "section-reorder" });
+  render();
+  showToast("Section order saved.");
+}
+
+function reorderActiveSections(sourceId, targetId) {
+  const active = getActiveSections();
+  const sourceIndex = active.findIndex((section) => section.id === sourceId);
+  const targetIndex = active.findIndex((section) => section.id === targetId);
+  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return false;
+  const [moved] = active.splice(sourceIndex, 1);
+  active.splice(targetIndex, 0, moved);
+  const archived = getArchivedSections();
+  state.sections = normalizeSectionOrder([...active, ...archived]);
+  return true;
+}
+
+function toggleSectionApplicable(sectionId) {
+  const section = findSection(sectionId);
+  if (!section) return;
+  section.isApplicable = !section.isApplicable;
+  section.updatedAt = new Date().toISOString();
+  saveState({ manual: true, mutationType: "section-applicability" });
+  render();
+  showToast(section.isApplicable ? "Section marked applicable." : "Section marked Not Applicable.");
+}
+
+function archiveSection(sectionId) {
+  const section = findSection(sectionId);
+  if (!section || section.isRequired) return;
+  const hasData = sectionHasReportData(section);
+  if (hasData && !window.confirm(`Remove "${getSectionTitle(section)}" from this report? Its notes, photos, and checklist progress will be archived locally so you can restore it later.`)) {
+    return;
+  }
+  section.isArchived = true;
+  section.deletedAt = new Date().toISOString();
+  section.updatedAt = section.deletedAt;
+  const active = getActiveSections();
+  state.currentSectionId = active[0] ? active[0].id : "";
+  normalizeSectionOrder(state.sections);
+  saveState({ manual: true, mutationType: "section-archive" });
+  render();
+  showToast("Section removed from this report.");
+}
+
+function restoreSection(sectionId) {
+  const section = findSection(sectionId);
+  if (!section) return;
+  section.isArchived = false;
+  section.deletedAt = "";
+  section.updatedAt = new Date().toISOString();
+  section.sortOrder = getActiveSections().length + 1;
+  normalizeSectionOrder(state.sections);
+  state.currentSectionId = section.id;
+  closeOverlays();
+  saveState({ manual: true, mutationType: "section-restore" });
+  render();
+  showToast("Section restored.");
+}
+
+function sectionHasReportData(section) {
+  return section.items.some((item) => item.status || item.condition !== "satisfactory" || item.observations.length);
 }
 
 function getReportPhotoIds(report) {
@@ -1561,14 +2335,19 @@ function closeOverlays() {
   reportDrawer.hidden = true;
   libraryDrawer.hidden = true;
   mobileMenuDrawer.hidden = true;
+  sectionManagerDrawer.hidden = true;
+  sectionActionPopover.hidden = true;
+  sectionActionPopover.innerHTML = "";
   sheetBackdrop.hidden = true;
   activeObservation = null;
 }
 
 function moveSection(direction) {
-  const currentIndex = state.sections.findIndex((section) => section.id === state.currentSectionId);
-  const nextIndex = Math.min(state.sections.length - 1, Math.max(0, currentIndex + direction));
-  state.currentSectionId = state.sections[nextIndex].id;
+  const active = getActiveSections();
+  const currentIndex = active.findIndex((section) => section.id === state.currentSectionId);
+  const nextIndex = Math.min(active.length - 1, Math.max(0, currentIndex + direction));
+  if (!active[nextIndex]) return;
+  state.currentSectionId = active[nextIndex].id;
   saveState();
   render();
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -1580,11 +2359,16 @@ function findSection(sectionId) {
 
 function findItem(sectionId, itemId) {
   const section = findSection(sectionId);
+  if (!section) return null;
   return section.items.find((item) => item.id === itemId);
 }
 
 function getCurrentSection() {
-  return findSection(state.currentSectionId) || state.sections[0];
+  const active = getActiveSections();
+  const section = findSection(state.currentSectionId);
+  if (section && !section.isArchived) return section;
+  state.currentSectionId = active[0] ? active[0].id : "";
+  return active[0];
 }
 
 function getSectionStats(section) {
@@ -1606,7 +2390,7 @@ function getOverallProgress() {
 }
 
 function getInspectionTotals() {
-  return state.sections.reduce((acc, section) => {
+  return getActiveSections().filter((section) => section.isApplicable).reduce((acc, section) => {
     const stats = getSectionStats(section);
     acc.total += stats.total;
     acc.complete += stats.complete;
@@ -1615,7 +2399,7 @@ function getInspectionTotals() {
 }
 
 function getReportTotals(report) {
-  return report.sections.reduce((acc, section) => {
+  return getActiveSections(report).filter((section) => section.isApplicable).reduce((acc, section) => {
     const total = section.items.length;
     const complete = section.items.filter((item) => item.status).length;
     acc.total += total;
@@ -1655,7 +2439,7 @@ function getReportSeverityCounts(report) {
 
 function getReportObservations(report) {
   const rows = [];
-  report.sections.forEach((section) => {
+  getActiveSections(report).filter((section) => section.isApplicable).forEach((section) => {
     section.items.forEach((item) => {
       item.observations.forEach((observation) => {
         rows.push({ section, item, observation });
@@ -1667,7 +2451,7 @@ function getReportObservations(report) {
 
 function getAllObservations() {
   const rows = [];
-  state.sections.forEach((section) => {
+  getActiveSections().filter((section) => section.isApplicable).forEach((section) => {
     section.items.forEach((item) => {
       item.observations.forEach((observation) => {
         rows.push({ section, item, observation });
@@ -1825,16 +2609,16 @@ function buildPrintHtml() {
       ${observations.map((entry) => `
         <div class="print-observation">
           <h3>${escapeHtml(entry.observation.title)}</h3>
-          <p>${escapeHtml(entry.section.title)} | ${escapeHtml(entry.item.title)} | ${escapeHtml(getSeverity(entry.observation.severity).label)}</p>
+          <p>${escapeHtml(getSectionTitle(entry.section))} | ${escapeHtml(entry.item.title)} | ${escapeHtml(getSeverity(entry.observation.severity).label)}</p>
           ${entry.observation.location ? `<p><strong>Location:</strong> ${escapeHtml(entry.observation.location)}</p>` : ""}
           ${entry.observation.note ? `<p>${escapeHtml(entry.observation.note)}</p>` : ""}
         </div>
       `).join("")}
     </section>
 
-    ${state.sections.map((section) => `
+    ${getActiveSections().map((section) => `
       <section class="print-page">
-        <h2>${escapeHtml(section.code)}: ${escapeHtml(section.title)}</h2>
+        <h2>${escapeHtml(section.code)}: ${escapeHtml(getSectionTitle(section))}${section.isApplicable ? "" : " (Not Applicable)"}</h2>
         <table class="print-table">
           <thead>
             <tr><th>Item</th><th>Status</th><th>Condition</th></tr>
@@ -1849,7 +2633,7 @@ function buildPrintHtml() {
             `).join("")}
           </tbody>
         </table>
-        ${section.items.flatMap((item) => item.observations.map((observation) => ({ item, observation }))).map(({ item, observation }) => `
+        ${section.isApplicable ? section.items.flatMap((item) => item.observations.map((observation) => ({ item, observation }))).map(({ item, observation }) => `
           <div class="print-observation">
             <h3>${escapeHtml(observation.title)}</h3>
             <p>${escapeHtml(item.title)} | ${escapeHtml(getSeverity(observation.severity).label)}</p>
@@ -1865,7 +2649,7 @@ function buildPrintHtml() {
               </div>
             ` : ""}
           </div>
-        `).join("")}
+        `).join("") : `<p>This section was marked Not Applicable for this property.</p>`}
       </section>
     `).join("")}
   `;
@@ -1972,7 +2756,8 @@ async function exportReportToFolder(pdfBlob) {
   state.exportFolderName = result.folderName || folderName;
   state.exportFolder = result.folderPath || "";
   state.exportPdfPath = result.pdfPath || "";
-  saveState({ manual: true });
+  state.reportStatus = "Finalized";
+  saveState({ manual: true, mutationType: "report-export" });
   return result;
 }
 
@@ -2002,8 +2787,8 @@ function buildExportPhotos(report) {
       if (!dataUrl) return;
       photos.push({
         id,
-        fileName: `${String(entryIndex + 1).padStart(2, "0")}-${safeFileName(entry.section.title)}-${safeFileName(entry.item.title)}-${photoIndex + 1}.jpg`,
-        section: entry.section.title,
+        fileName: `${String(entryIndex + 1).padStart(2, "0")}-${safeFileName(getSectionTitle(entry.section))}-${safeFileName(entry.item.title)}-${photoIndex + 1}.jpg`,
+        section: getSectionTitle(entry.section),
         item: entry.item.title,
         observation: entry.observation.title,
         dataUrl
@@ -2142,14 +2927,15 @@ async function renderReportCanvases() {
   finishPage();
 
   page = startPage("Report Map");
-  drawReportMap(page.ctx, state.sections, margin, page.y, pageWidth - margin * 2);
+  drawReportMap(page.ctx, getActiveSections(), margin, page.y, pageWidth - margin * 2);
   finishPage();
 
-  for (const section of state.sections) {
-    page = startPage(`${section.code}: ${section.title}`);
+  for (const section of getActiveSections()) {
+    const sectionTitle = getSectionTitle(section);
+    page = startPage(`${section.code}: ${sectionTitle}`);
     page.ctx.fillStyle = PDF_COLORS.ink;
     page.ctx.font = "700 38px Arial";
-    page.ctx.fillText(`${section.code}: ${section.title}`, margin, page.y);
+    page.ctx.fillText(`${section.code}: ${sectionTitle}${section.isApplicable ? "" : " (Not Applicable)"}`, margin, page.y);
     page.y += 44;
     page.y = drawWrapped(page.ctx, section.subtitle, margin, page.y, pageWidth - margin * 2, 26, PDF_COLORS.muted, "400 21px Arial");
     page.y += 28;
@@ -2157,22 +2943,30 @@ async function renderReportCanvases() {
     drawChecklistHeader(page.ctx, margin, page.y, pageWidth - margin * 2);
     page.y += 48;
     for (const item of section.items) {
-      ensure(46, `${section.code}: ${section.title}`);
+      ensure(46, `${section.code}: ${sectionTitle}`);
       drawChecklistRow(page.ctx, item, margin, page.y, pageWidth - margin * 2);
       page.y += 46;
     }
     page.y += 22;
 
+    if (!section.isApplicable) {
+      ensure(58, `${section.code}: ${sectionTitle}`);
+      drawMutedText(page.ctx, "This section was marked Not Applicable for this property.", margin, page.y, pageWidth - margin * 2, 26);
+      page.y += 58;
+      finishPage();
+      continue;
+    }
+
     const sectionObservations = section.items.flatMap((item) => item.observations.map((observation) => ({ section, item, observation })));
     if (!sectionObservations.length) {
-      ensure(58, `${section.code}: ${section.title}`);
+      ensure(58, `${section.code}: ${sectionTitle}`);
       drawMutedText(page.ctx, "No reportable observations in this section.", margin, page.y, pageWidth - margin * 2, 26);
       page.y += 58;
     }
 
     for (const entry of sectionObservations) {
       const height = measureObservation(page.ctx, entry.observation, pageWidth - margin * 2, false);
-      ensure(height + 28, `${section.code}: ${section.title}`);
+      ensure(height + 28, `${section.code}: ${sectionTitle}`);
       page.y = await drawFullObservation(page.ctx, entry, margin, page.y, pageWidth - margin * 2);
       page.y += 24;
     }
@@ -2311,7 +3105,7 @@ function drawReportMap(ctx, sections, x, y, width) {
     ctx.fillText(section.code, cellX + 22, cellY + 34);
     ctx.fillStyle = PDF_COLORS.ink;
     ctx.font = "700 18px Arial";
-    trimText(ctx, section.title, cellX + 66, cellY + 25, colWidth - 190);
+    trimText(ctx, `${getSectionTitle(section)}${section.isApplicable ? "" : " (N/A)"}`, cellX + 66, cellY + 25, colWidth - 190);
     ctx.fillStyle = PDF_COLORS.muted;
     ctx.font = "400 15px Arial";
     ctx.fillText(`${stats.total} items | ${stats.observations} observations`, cellX + 66, cellY + 45);
@@ -2321,17 +3115,19 @@ function drawReportMap(ctx, sections, x, y, width) {
 function drawObservationSummary(ctx, entry, x, y, width) {
   const observation = entry.observation;
   const height = measureObservation(ctx, observation, width, true);
+  const contentX = x + 42;
+  const contentWidth = width - 64;
   drawGlassPanel(ctx, x, y, width, height, 14, { shadowBlur: 14, shadowOffsetY: 6 });
   ctx.fillStyle = getSeverityColor(observation.severity);
   roundedRect(ctx, x + 16, y + 18, 6, height - 36, 3, getSeverityColor(observation.severity), null);
-  drawSeverityPill(ctx, observation.severity, x + 18, y + 22);
+  drawSeverityPill(ctx, observation.severity, contentX, y + 22);
   ctx.fillStyle = PDF_COLORS.ink;
   ctx.font = "700 24px Arial";
-  ctx.fillText(observation.title || "Observation", x + 18, y + 78);
+  ctx.fillText(observation.title || "Observation", contentX, y + 78);
   ctx.fillStyle = PDF_COLORS.muted;
   ctx.font = "400 19px Arial";
-  ctx.fillText(`${entry.section.title} | ${entry.item.title}${observation.location ? " | " + observation.location : ""}`, x + 18, y + 108);
-  drawWrapped(ctx, observation.note, x + 18, y + 142, width - 36, 26, PDF_COLORS.ink, "400 20px Arial");
+  ctx.fillText(`${getSectionTitle(entry.section)} | ${entry.item.title}${observation.location ? " | " + observation.location : ""}`, contentX, y + 108);
+  drawWrapped(ctx, observation.note, contentX, y + 142, contentWidth, 26, PDF_COLORS.ink, "400 20px Arial");
 }
 
 function drawChecklistHeader(ctx, x, y, width) {
@@ -2359,8 +3155,9 @@ function drawChecklistRow(ctx, item, x, y, width) {
 }
 
 function measureObservation(ctx, observation, width, compact) {
-  const noteLines = wrapLines(ctx, observation.note || "", width - 36, "400 20px Arial");
-  const recLines = wrapLines(ctx, observation.recommendation || "", width - 36, "400 20px Arial");
+  const contentWidth = width - 64;
+  const noteLines = wrapLines(ctx, observation.note || "", contentWidth, "400 20px Arial");
+  const recLines = wrapLines(ctx, observation.recommendation || "", contentWidth, "400 20px Arial");
   let height = compact ? 168 : 220;
   height += noteLines.length * 26;
   if (!compact) height += recLines.length * 26;
@@ -2374,39 +3171,41 @@ function measureObservation(ctx, observation, width, compact) {
 async function drawFullObservation(ctx, entry, x, y, width) {
   const observation = entry.observation;
   const height = measureObservation(ctx, observation, width, false);
+  const contentX = x + 42;
+  const contentWidth = width - 64;
   drawGlassPanel(ctx, x, y, width, height, 14, { shadowBlur: 14, shadowOffsetY: 6 });
   roundedRect(ctx, x + 16, y + 18, 6, height - 36, 3, getSeverityColor(observation.severity), null);
-  drawSeverityPill(ctx, observation.severity, x + 18, y + 22);
+  drawSeverityPill(ctx, observation.severity, contentX, y + 22);
 
   ctx.fillStyle = PDF_COLORS.ink;
   ctx.font = "700 26px Arial";
-  ctx.fillText(observation.title || "Observation", x + 18, y + 78);
+  ctx.fillText(observation.title || "Observation", contentX, y + 78);
   ctx.fillStyle = PDF_COLORS.muted;
   ctx.font = "400 19px Arial";
-  ctx.fillText(`${entry.item.title}${observation.location ? " | " + observation.location : ""}`, x + 18, y + 110);
+  ctx.fillText(`${entry.item.title}${observation.location ? " | " + observation.location : ""}`, contentX, y + 110);
 
   let currentY = y + 148;
   if (observation.note) {
-    currentY = drawWrapped(ctx, observation.note, x + 18, currentY, width - 36, 26, PDF_COLORS.ink, "400 20px Arial");
+    currentY = drawWrapped(ctx, observation.note, contentX, currentY, contentWidth, 26, PDF_COLORS.ink, "400 20px Arial");
     currentY += 18;
   }
 
   if (observation.recommendation) {
     ctx.fillStyle = PDF_COLORS.ink;
     ctx.font = "700 20px Arial";
-    ctx.fillText("Recommendation", x + 18, currentY);
+    ctx.fillText("Recommendation", contentX, currentY);
     currentY += 28;
-    currentY = drawWrapped(ctx, observation.recommendation, x + 18, currentY, width - 36, 26, PDF_COLORS.ink, "400 20px Arial");
+    currentY = drawWrapped(ctx, observation.recommendation, contentX, currentY, contentWidth, 26, PDF_COLORS.ink, "400 20px Arial");
     currentY += 18;
   }
 
   const photos = observation.photoIds.slice(0, 4).map((id) => photoCache.get(id)).filter(Boolean);
   if (photos.length) {
-    const photoWidth = (width - 54) / 2;
+    const photoWidth = (contentWidth - 18) / 2;
     const photoHeight = 360;
     for (let index = 0; index < photos.length; index += 1) {
       const image = await loadImage(photos[index]);
-      const px = x + 18 + (index % 2) * (photoWidth + 18);
+      const px = contentX + (index % 2) * (photoWidth + 18);
       const py = currentY + Math.floor(index / 2) * (photoHeight + 18);
       drawImageContain(ctx, image, px, py, photoWidth, photoHeight, {
         fill: PDF_COLORS.faint,

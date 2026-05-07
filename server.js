@@ -1,10 +1,11 @@
 const http = require("http");
 const fs = require("fs/promises");
+const os = require("os");
 const path = require("path");
 
 const PORT = Number(process.env.PORT || 5173);
 const ROOT = __dirname;
-const EXPORT_ROOT = process.env.INSPECTFLOW_EXPORT_ROOT || "/Users/eric/Desktop/InspectFlow Reports";
+const EXPORT_ROOT = process.env.TRUEVIEW_EXPORT_ROOT || process.env.INSPECTFLOW_EXPORT_ROOT || path.join(os.homedir(), "Desktop", "TrueView Reports");
 const MAX_BODY_BYTES = 160 * 1024 * 1024;
 
 const MIME_TYPES = {
@@ -46,7 +47,7 @@ const server = http.createServer(async (request, response) => {
 
 server.listen(PORT, "::", async () => {
   await fs.mkdir(EXPORT_ROOT, { recursive: true });
-  console.log(`InspectFlow running at http://localhost:${PORT}`);
+  console.log(`TrueView running at http://localhost:${PORT}`);
   console.log(`Reports export to ${EXPORT_ROOT}`);
 });
 
