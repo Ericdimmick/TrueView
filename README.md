@@ -13,7 +13,7 @@ npm start
 Then open:
 
 ```text
-http://localhost:5173/index.html?v=11
+http://localhost:5173/index.html?v=12
 ```
 
 If port 5173 is busy:
@@ -90,20 +90,43 @@ Sync status:
 
 - The header shows Online/Offline, pending change count, sync failures, conflicts, and whether cloud sync is configured.
 - Changes are queued locally while offline or while cloud sync is not configured.
-- When internet returns, the sync service attempts to sync through the configured adapter.
+- When internet returns, the sync service attempts to sync through Supabase when configured.
 - Without cloud credentials, the app truthfully shows **Cloud sync not configured** and keeps all local work safe.
 
-Cloud sync still needed:
+## Supabase Cloud Sync
 
-- `sync-service.js` contains the adapter boundary and conflict policy.
-- Supabase-ready config keys are supported as browser globals: `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
-- Actual Supabase tables, auth, remote upload/download, and conflict-resolution UI still need to be connected before true multi-device cloud sync is live.
+Supabase sync is implemented as a local-first layer. IndexedDB/localStorage still save first, then `sync-service.js` pushes queued reports/photos to Supabase and pulls remote reports/photos back down when online.
+
+Run the SQL in:
+
+```text
+supabase/schema.sql
+```
+
+Add these Vercel environment variables:
+
+```text
+NEXT_PUBLIC_SUPABASE_URL
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+NEXT_PUBLIC_SUPABASE_ANON_KEY
+NEXT_PUBLIC_TRUEVIEW_SYNC_SPACE_ID
+```
+
+Use either the publishable key or the older anon key. Do not use a Supabase service-role key in the frontend.
+
+`NEXT_PUBLIC_TRUEVIEW_SYNC_SPACE_ID` should be a long random value used by the RLS policies to isolate your TrueView data. After adding/changing Vercel variables, trigger a new production deployment so `env-config.js` is regenerated.
+
+Conflict behavior:
+
+- Local edits are never silently overwritten.
+- If remote data is newer and the local report has no pending local edits, TrueView pulls the remote report.
+- If both local and remote changed, the sync queue marks a conflict and keeps the local report safe for review.
 
 Known limitations:
 
 - iOS storage can still be affected by device-level storage pressure, so finalized PDFs should be shared/exported when possible.
 - Desktop/iCloud folder export depends on running `server.js` locally.
-- Browser automation cannot fully prove iPhone physical long-press feel; verify drag reorder on the actual device.
+- Large production photo libraries should eventually move from `trueview_photos.data_url` into the private `trueview-photos` Supabase Storage bucket described in the SQL.
 
 ## Install On iPhone
 
@@ -163,7 +186,7 @@ Photo-frame alignment uses the same corrected inset; test with real observation 
 - `styles.css`: TrueView liquid-glass UI, mobile controls, section manager, touch feedback.
 - `app.js`: report workflow, dynamic section management, autosave, PDF/export, offline integration.
 - `offline-db.js`: IndexedDB database layer and typed record boundaries.
-- `sync-service.js`: sync queue adapter boundary and conflict strategy placeholder.
+- `sync-service.js`: Supabase REST sync adapter, pending queue processing, and conflict strategy.
 - `sw.js`: offline app-shell service worker.
 - `manifest.webmanifest`: installable PWA metadata.
 - `types.d.ts`: TypeScript interfaces for reports, sections, observations, and sync records.

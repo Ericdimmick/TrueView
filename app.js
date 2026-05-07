@@ -188,6 +188,7 @@ async function boot() {
   setupConnectivityListeners();
   await refreshSyncSummary();
   render();
+  await refreshSyncSummary(Boolean(window.TrueViewSync?.isConfigured() && navigator.onLine));
   saveState({ mutationType: "boot-hydrate", skipQueue: true });
 }
 
@@ -847,7 +848,7 @@ function scheduleOfflineReportSave(options = {}) {
         queue: !options.skipQueue
       });
       await window.TrueViewOfflineDB.saveLibrary(library, { queue: false });
-      await refreshSyncSummary();
+      await refreshSyncSummary(Boolean(window.TrueViewSync?.isConfigured() && navigator.onLine && !options.skipQueue));
       updateSaveStatus(getLocalSaveLabel());
     } catch (error) {
       console.warn(error);
@@ -884,11 +885,78 @@ async function refreshSyncSummary(attemptSync = false) {
     if (attemptSync && window.TrueViewSync) {
       const result = await window.TrueViewSync.attemptSync();
       syncSummary = { ...syncSummary, ...result };
+      const changedReports = mergeSyncedReports(result.pulledReports || []);
+      await cacheSyncedPhotos(result.pulledPhotos || []);
+      const markedSynced = markInMemoryReportsSynced(result);
+      if (changedReports && state) {
+        persistLibrary();
+        render();
+        showToast("Cloud reports updated.");
+      } else if (markedSynced) {
+        persistLibrary();
+        renderLibraryDrawer();
+      }
     }
   } catch (error) {
     console.warn(error);
   }
   updateSyncIndicator();
+}
+
+function markInMemoryReportsSynced(result) {
+  if (!result?.ok || result.pending || result.failed || result.conflicts || !library) return false;
+  let changed = false;
+  library.reports.forEach((report) => {
+    if (report.syncStatus !== "synced") {
+      report.syncStatus = "synced";
+      changed = true;
+    }
+  });
+  if (state && state.syncStatus !== "synced") {
+    state.syncStatus = "synced";
+    changed = true;
+  }
+  return changed;
+}
+
+function mergeSyncedReports(reports) {
+  if (!Array.isArray(reports) || !reports.length || !library) return false;
+  let changed = false;
+  reports.forEach((report) => {
+    const migrated = migrateState(report);
+    const index = library.reports.findIndex((entry) => entry.id === migrated.id);
+    if (index < 0) {
+      library.reports.unshift(migrated);
+      changed = true;
+      return;
+    }
+
+    const existing = library.reports[index];
+    const existingTime = new Date(existing.updatedAt || existing.lastSavedAt || existing.createdAt || 0).getTime();
+    const incomingTime = new Date(migrated.updatedAt || migrated.lastSavedAt || migrated.createdAt || 0).getTime();
+    const localHasPendingWork = existing.syncStatus === "pending" || existing.syncStatus === "conflict";
+    if (!localHasPendingWork && incomingTime >= existingTime) {
+      library.reports[index] = migrated;
+      if (state && state.id === migrated.id) state = migrated;
+      changed = true;
+    }
+  });
+  return changed;
+}
+
+async function cacheSyncedPhotos(photos) {
+  if (!Array.isArray(photos) || !photos.length) return;
+  for (const photo of photos) {
+    if (!photo.id || !photo.dataUrl) continue;
+    photoCache.set(photo.id, photo.dataUrl);
+    if (!photoDb) continue;
+    await new Promise((resolve) => {
+      const transaction = photoDb.transaction(PHOTO_STORE, "readwrite");
+      transaction.objectStore(PHOTO_STORE).put({ id: photo.id, dataUrl: photo.dataUrl, createdAt: Date.now() });
+      transaction.oncomplete = resolve;
+      transaction.onerror = resolve;
+    });
+  }
 }
 
 function updateSyncIndicator() {
@@ -2014,6 +2082,8 @@ function handleSectionPointerDown(event) {
     active: false,
     moved: false,
     source: button,
+    container: button.closest(".section-list"),
+    lastTarget: null,
     timer: window.setTimeout(() => startSectionDrag(button), 360)
   };
 }
@@ -2029,15 +2099,13 @@ function handleSectionPointerMove(event) {
   if (!sectionDrag.active) return;
   event.preventDefault();
   sectionDrag.moved = true;
-  const over = document.elementFromPoint(event.clientX, event.clientY)?.closest(".section-button[data-section-id]");
-  if (!over || over.dataset.sectionId === sectionDrag.id) return;
-  if (reorderActiveSections(sectionDrag.id, over.dataset.sectionId)) {
-    state.currentSectionId = sectionDrag.id;
-    renderSectionList();
-    if (!sectionDrawer.hidden) renderSectionDrawer();
-    const currentButton = document.querySelector(`.section-button[data-section-id="${cssEscape(sectionDrag.id)}"]`);
-    currentButton?.classList.add("dragging");
-  }
+  const target = getSectionDragTarget(event.clientY);
+  if (!target) return;
+  sectionDrag.lastTarget = {
+    sectionId: target.sectionId,
+    position: target.position
+  };
+  showSectionDragTarget(target);
 }
 
 function startSectionDrag(button) {
@@ -2051,17 +2119,57 @@ function startSectionDrag(button) {
 function finishSectionDrag() {
   if (!sectionDrag) return;
   clearTimeout(sectionDrag.timer);
+  const drag = sectionDrag;
   const wasActive = sectionDrag.active;
   document.body.classList.remove("section-drag-active");
+  clearSectionDragTarget();
   document.querySelectorAll(".section-button.dragging").forEach((button) => button.classList.remove("dragging"));
   sectionDrag = null;
   if (wasActive) {
+    if (drag.lastTarget) {
+      reorderActiveSections(drag.id, drag.lastTarget.sectionId, drag.lastTarget.position);
+    }
     suppressSectionClickUntil = Date.now() + 500;
-    normalizeSectionOrder(state.sections);
+    state.sections = normalizeSectionOrder(state.sections);
     saveState({ manual: true, mutationType: "section-drag-reorder" });
     render();
     showToast("Section order saved.");
   }
+}
+
+function getVisibleSectionListContainer() {
+  if (sectionDrawer && !sectionDrawer.hidden) return sectionDrawer.querySelector(".section-list");
+  return sectionList;
+}
+
+function getSectionDragTarget(clientY) {
+  const container = sectionDrag.container || getVisibleSectionListContainer();
+  if (!container) return null;
+  const buttons = Array.from(container.querySelectorAll(".section-button[data-section-id]"))
+    .filter((button) => button.dataset.sectionId !== sectionDrag.id);
+  if (!buttons.length) return null;
+
+  for (const button of buttons) {
+    const rect = button.getBoundingClientRect();
+    const midpoint = rect.top + rect.height / 2;
+    if (clientY < midpoint) {
+      return { sectionId: button.dataset.sectionId, position: "before", button };
+    }
+  }
+
+  const lastButton = buttons[buttons.length - 1];
+  return { sectionId: lastButton.dataset.sectionId, position: "after", button: lastButton };
+}
+
+function showSectionDragTarget(target) {
+  clearSectionDragTarget();
+  target.button.classList.add(target.position === "after" ? "drag-over-after" : "drag-over-before");
+}
+
+function clearSectionDragTarget() {
+  document.querySelectorAll(".drag-over-before, .drag-over-after").forEach((button) => {
+    button.classList.remove("drag-over-before", "drag-over-after");
+  });
 }
 
 function preventSectionContextMenu(event) {
@@ -2186,19 +2294,21 @@ function moveSectionInstance(sectionId, direction) {
   const index = active.findIndex((section) => section.id === sectionId);
   const nextIndex = Math.min(active.length - 1, Math.max(0, index + direction));
   if (index < 0 || nextIndex === index) return;
-  reorderActiveSections(sectionId, active[nextIndex].id);
+  reorderActiveSections(sectionId, active[nextIndex].id, direction > 0 ? "after" : "before");
   saveState({ manual: true, mutationType: "section-reorder" });
   render();
   showToast("Section order saved.");
 }
 
-function reorderActiveSections(sourceId, targetId) {
+function reorderActiveSections(sourceId, targetId, position = "before") {
   const active = getActiveSections();
   const sourceIndex = active.findIndex((section) => section.id === sourceId);
   const targetIndex = active.findIndex((section) => section.id === targetId);
   if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return false;
   const [moved] = active.splice(sourceIndex, 1);
-  active.splice(targetIndex, 0, moved);
+  let insertIndex = active.findIndex((section) => section.id === targetId);
+  if (position === "after") insertIndex += 1;
+  active.splice(insertIndex, 0, moved);
   const archived = getArchivedSections();
   state.sections = normalizeSectionOrder([...active, ...archived]);
   return true;

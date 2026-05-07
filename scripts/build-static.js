@@ -20,6 +20,13 @@ const STATIC_FILES = [
   "icon-512.png"
 ];
 
+const CLIENT_ENV_KEYS = [
+  "NEXT_PUBLIC_SUPABASE_URL",
+  "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
+  "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+  "NEXT_PUBLIC_TRUEVIEW_SYNC_SPACE_ID"
+];
+
 async function build() {
   await fs.rm(OUT_DIR, { recursive: true, force: true });
   await fs.mkdir(OUT_DIR, { recursive: true });
@@ -29,8 +36,17 @@ async function build() {
       await fs.copyFile(path.join(ROOT, file), path.join(OUT_DIR, file));
     })
   );
+  await fs.writeFile(path.join(OUT_DIR, "env-config.js"), buildEnvConfig(), "utf8");
 
   console.log(`Static PWA build written to ${path.relative(ROOT, OUT_DIR)}`);
+}
+
+function buildEnvConfig() {
+  const env = {};
+  CLIENT_ENV_KEYS.forEach((key) => {
+    env[key] = process.env[key] || "";
+  });
+  return `window.TrueViewEnv = ${JSON.stringify(env, null, 2)};\n`;
 }
 
 build().catch((error) => {

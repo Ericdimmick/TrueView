@@ -1,8 +1,9 @@
-const CACHE_NAME = "trueview-field-v11";
+const CACHE_NAME = "trueview-field-v12";
 const APP_FILES = [
   "./",
   "./index.html",
   "./styles.css",
+  "./env-config.js",
   "./app.js",
   "./offline-db.js",
   "./sync-service.js",

@@ -153,7 +153,8 @@
     const copy = clone(report);
     copy.deviceId = copy.deviceId || deviceId;
     copy.localId = copy.localId || copy.id;
-    copy.syncStatus = copy.syncStatus || "pending";
+    copy.remoteId = options.remoteId || copy.remoteId || "";
+    copy.syncStatus = options.syncStatus || copy.syncStatus || "pending";
 
     const reportRecord = {
       localId: copy.id,
@@ -250,32 +251,36 @@
     })));
   }
 
-  async function savePhotoMetadata(photo) {
+  async function savePhotoMetadata(photo, options = {}) {
     const savedAt = nowIso();
     await put("photos", {
       localId: photo.id,
+      remoteId: options.remoteId || photo.remoteId || "",
       reportId: photo.reportId || "",
       sectionId: photo.sectionId || "",
       itemId: photo.itemId || "",
       observationId: photo.observationId || "",
       usage: photo.usage || "inspection-photo",
       dataUrl: photo.dataUrl || "",
-      syncStatus: "pending",
+      storagePath: photo.storagePath || "",
+      syncStatus: options.syncStatus || photo.syncStatus || "pending",
       createdAt: photo.createdAt || savedAt,
       updatedAt: savedAt,
       deviceId: getDeviceId()
     });
-    await enqueueMutation({
-      localId: `${photo.id}:photo-upsert`,
-      entity: "photo",
-      entityLocalId: photo.id,
-      mutationType: "photo-upsert",
-      status: "pending",
-      attempts: 0,
-      createdAt: savedAt,
-      updatedAt: savedAt,
-      deviceId: getDeviceId()
-    });
+    if (options.queue !== false) {
+      await enqueueMutation({
+        localId: `${photo.id}:photo-upsert`,
+        entity: "photo",
+        entityLocalId: photo.id,
+        mutationType: "photo-upsert",
+        status: "pending",
+        attempts: 0,
+        createdAt: savedAt,
+        updatedAt: savedAt,
+        deviceId: getDeviceId()
+      });
+    }
   }
 
   async function deletePhotoMetadata(photoId) {
@@ -299,6 +304,108 @@
     };
   }
 
+  async function getReportRecords() {
+    return getAll("reports");
+  }
+
+  async function getPhotoRecords() {
+    return getAll("photos");
+  }
+
+  async function saveRemoteReport(report, remoteId) {
+    const copy = clone(report);
+    copy.remoteId = remoteId || copy.remoteId || "";
+    copy.syncStatus = "synced";
+    await saveReport(copy, { queue: false, remoteId: copy.remoteId, syncStatus: "synced" });
+  }
+
+  async function saveRemotePhoto(photo, remoteId) {
+    await savePhotoMetadata(
+      {
+        ...photo,
+        id: photo.id || photo.localId,
+        remoteId: remoteId || photo.remoteId || "",
+        syncStatus: "synced"
+      },
+      { queue: false, remoteId: remoteId || photo.remoteId || "", syncStatus: "synced" }
+    );
+  }
+
+  async function markReportSynced(reportId, remoteId) {
+    const record = await get("reports", reportId);
+    if (record) {
+      record.remoteId = remoteId || record.remoteId || "";
+      record.syncStatus = "synced";
+      record.updatedAt = record.report?.updatedAt || nowIso();
+      record.report = {
+        ...record.report,
+        remoteId: record.remoteId,
+        syncStatus: "synced"
+      };
+      await put("reports", record);
+    }
+    await clearQueueForEntity(reportId, "report");
+  }
+
+  async function markPhotoSynced(photoId, remoteId) {
+    const record = await get("photos", photoId);
+    if (record) {
+      record.remoteId = remoteId || record.remoteId || "";
+      record.syncStatus = "synced";
+      record.updatedAt = nowIso();
+      await put("photos", record);
+    }
+    await clearQueueForEntity(photoId, "photo");
+  }
+
+  async function markEntityConflict(entityLocalId, entity) {
+    const records = await getAll("syncQueue");
+    const now = nowIso();
+    await putMany("syncQueue", records
+      .filter((record) => record.entityLocalId === entityLocalId && (!entity || record.entity === entity))
+      .map((record) => ({ ...record, status: "conflict", updatedAt: now })));
+
+    if (entity === "report") {
+      const reportRecord = await get("reports", entityLocalId);
+      if (reportRecord) {
+        reportRecord.syncStatus = "conflict";
+        reportRecord.report = { ...reportRecord.report, syncStatus: "conflict", reportStatus: "Conflict" };
+        await put("reports", reportRecord);
+      }
+    }
+  }
+
+  async function markEntityFailed(entityLocalId, entity, message) {
+    const records = await getAll("syncQueue");
+    const now = nowIso();
+    await putMany("syncQueue", records
+      .filter((record) => record.entityLocalId === entityLocalId && (!entity || record.entity === entity))
+      .map((record) => ({
+        ...record,
+        status: "failed",
+        attempts: (record.attempts || 0) + 1,
+        error: message || "",
+        updatedAt: now
+      })));
+  }
+
+  async function clearQueueForEntity(entityLocalId, entity) {
+    const records = await getAll("syncQueue");
+    await Promise.all(records
+      .filter((record) => record.entityLocalId === entityLocalId && (!entity || record.entity === entity))
+      .map((record) => remove("syncQueue", record.localId)));
+  }
+
+  async function setSyncMeta(meta) {
+    const existing = await get("syncMeta", "global");
+    await put("syncMeta", {
+      ...(existing || { key: "global" }),
+      ...meta,
+      key: "global",
+      updatedAt: nowIso()
+    });
+  }
+
   async function deleteReport(reportId) {
     await remove("reports", reportId);
     const stores = ["reportSections", "inspectionItems", "photos", "syncQueue"];
@@ -317,11 +424,21 @@
     loadLibrary,
     saveLibrary,
     saveReport,
+    saveRemoteReport,
     deleteReport,
     saveSectionTemplates,
     savePhotoMetadata,
+    saveRemotePhoto,
     deletePhotoMetadata,
     enqueueMutation,
-    getSyncSummary
+    getSyncSummary,
+    getReportRecords,
+    getPhotoRecords,
+    markReportSynced,
+    markPhotoSynced,
+    markEntityConflict,
+    markEntityFailed,
+    clearQueueForEntity,
+    setSyncMeta
   };
 })();

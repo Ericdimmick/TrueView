@@ -33,6 +33,11 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "GET" && request.url.split("?")[0] === "/env-config.js") {
+      sendEnvConfig(response);
+      return;
+    }
+
     if (request.method === "GET" || request.method === "HEAD") {
       await serveStatic(request, response);
       return;
@@ -179,4 +184,20 @@ function sendText(response, status, text) {
     "Content-Length": Buffer.byteLength(text)
   });
   response.end(text);
+}
+
+function sendEnvConfig(response) {
+  const env = {
+    NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL || "",
+    NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || "",
+    NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "",
+    NEXT_PUBLIC_TRUEVIEW_SYNC_SPACE_ID: process.env.NEXT_PUBLIC_TRUEVIEW_SYNC_SPACE_ID || ""
+  };
+  const body = `window.TrueViewEnv = ${JSON.stringify(env, null, 2)};\n`;
+  response.writeHead(200, {
+    "Content-Type": "text/javascript; charset=utf-8",
+    "Content-Length": Buffer.byteLength(body),
+    "Cache-Control": "no-store"
+  });
+  response.end(body);
 }

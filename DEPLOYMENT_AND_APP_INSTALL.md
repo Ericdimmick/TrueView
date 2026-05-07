@@ -31,7 +31,7 @@ https://github.com/Ericdimmick/TrueView.git
 ## Project Inspection Results
 
 Framework:
-Vanilla static web app. The app shell is `index.html`, styling is `styles.css`, app logic is `app.js`, local database logic is `offline-db.js`, sync scaffolding is `sync-service.js`, and the local server is `server.js`.
+Vanilla static web app. The app shell is `index.html`, styling is `styles.css`, app logic is `app.js`, local database logic is `offline-db.js`, Supabase sync logic is `sync-service.js`, and the local server is `server.js`.
 
 Package manager:
 `npm`, based on the project `package.json`. There is no `yarn.lock`, `pnpm-lock.yaml`, or Bun lock file in the project.
@@ -51,7 +51,7 @@ node server.js
 Default local URL:
 
 ```text
-http://localhost:5173/index.html?v=11
+http://localhost:5173/index.html?v=12
 ```
 
 If port `5173` is already busy:
@@ -110,7 +110,7 @@ navigator.serviceWorker.register("./sw.js")
 ```
 
 Offline app shell:
-`sw.js` caches the core app files, manifest, icons, logo, and offline fallback. It also ignores query-string versioning when matching cached assets, which helps `styles.css?v=11` and `app.js?v=11` resolve against the cached app shell. The production service worker is served with `Service-Worker-Allowed: /` and `Cache-Control: no-cache, no-store, must-revalidate`.
+`sw.js` caches the core app files, manifest, icons, logo, and offline fallback. It also ignores query-string versioning when matching cached assets, which helps `styles.css?v=12` and `app.js?v=12` resolve against the cached app shell. The production service worker is served with `Service-Worker-Allowed: /` and `Cache-Control: no-cache, no-store, must-revalidate`.
 
 iOS Safari Home Screen support:
 `index.html` includes:
@@ -129,11 +129,13 @@ Reports persist after refresh:
 Yes. On boot, `loadLibrary()` attempts to load reports from IndexedDB first, then falls back to the existing `localStorage` mirror. This preserves reports, dynamic sections, section order, section names, observations, and local report status across refreshes and app restarts.
 
 Cloud sync:
-Cloud sync is prepared architecturally, not fully connected. `sync-service.js` checks for Supabase-style browser globals:
+Cloud sync is implemented through Supabase but only becomes active after the Supabase SQL has been run and Vercel environment variables are configured. `sync-service.js` checks for these browser globals generated into `env-config.js` at build time:
 
 ```js
 NEXT_PUBLIC_SUPABASE_URL
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 NEXT_PUBLIC_SUPABASE_ANON_KEY
+NEXT_PUBLIC_TRUEVIEW_SYNC_SPACE_ID
 ```
 
 If they are not configured, the app correctly reports:
@@ -143,6 +145,43 @@ Cloud sync not configured
 ```
 
 The app remains usable offline/local-first without cloud credentials.
+
+## Supabase Setup
+
+Run this SQL in the Supabase SQL Editor:
+
+```text
+supabase/schema.sql
+```
+
+The SQL creates:
+
+- `public.trueview_reports`
+- `public.trueview_photos`
+- update timestamp triggers
+- sync-space Row Level Security policies
+- optional private `trueview-photos` storage bucket for a later large-photo storage upgrade
+
+Add these Vercel environment variables to the `trueview` project:
+
+```text
+NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=YOUR_SUPABASE_PUBLISHABLE_KEY
+NEXT_PUBLIC_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY_IF_USING_THE_OLDER_KEY_NAME
+NEXT_PUBLIC_TRUEVIEW_SYNC_SPACE_ID=A_LONG_RANDOM_VALUE_YOU_KEEP_THE_SAME_ON_ALL_TRUEVIEW_DEVICES
+```
+
+Use `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` for new Supabase projects. `NEXT_PUBLIC_SUPABASE_ANON_KEY` is supported for the older anon-key convention. Do not add a service-role key to Vercel or the frontend.
+
+After adding or changing those variables, redeploy the Vercel project so `scripts/build-static.js` can write them into `public/env-config.js`.
+
+Supabase sync behavior:
+
+- IndexedDB/localStorage remain the first save location.
+- Supabase sync only runs when online and configured.
+- Reports, dynamic sections, section order, observations, recommendations, statuses, and photo data URLs are synced.
+- If remote data is newer and the local report has no pending local edits, TrueView pulls the remote report.
+- If local and remote both changed, TrueView marks a conflict and does not overwrite silently.
 
 ## Verified Commands
 
@@ -220,7 +259,7 @@ For local same-Wi-Fi testing:
 3. On the iPhone, open Safari to:
 
    ```text
-   http://YOUR_MAC_LAN_IP:5173/index.html?v=11
+   http://YOUR_MAC_LAN_IP:5173/index.html?v=12
    ```
 
 4. Wait for the app to load fully once.
@@ -257,7 +296,7 @@ Local offline test:
 2. Open:
 
    ```text
-   http://localhost:5173/index.html?v=11
+   http://localhost:5173/index.html?v=12
    ```
 
 3. Create or edit a report.
@@ -298,39 +337,52 @@ Production offline test:
 9. Turn the internet back on.
 10. Confirm the sync indicator returns to online/local pending or cloud not configured.
 
-## Multi-Device Cloud Sync Remaining Work
+Two-device Supabase sync test:
+
+1. Run `supabase/schema.sql` in Supabase.
+2. Add the Vercel variables listed above.
+3. Redeploy Vercel.
+4. Open `https://trueview-omega.vercel.app` on device A.
+5. Create a report, enter a unique property address, add/rename/reorder a section, and add an observation.
+6. Wait for the header to show a synced or no-pending state.
+7. Open the same URL on device B.
+8. Wait a few seconds while online.
+9. Open the report library and confirm the report from device A appears.
+10. Make a small edit on device B and wait for sync.
+11. Return to device A, refresh/reopen, and confirm the edit appears.
+
+## Multi-Device Cloud Sync Status
 
 The app already has:
 
 - device IDs
 - local IDs
-- remote ID placeholders
+- remote IDs from Supabase rows
 - updated timestamps
 - sync statuses
 - sync queue records
-- conflict status placeholders
-- Supabase configuration placeholders
+- conflict detection
+- Supabase REST sync through `sync-service.js`
 - local-first IndexedDB persistence
 
-Still needed for true multi-device sync:
+Still recommended for production hardening:
 
-- choose Supabase, Firebase, or another cloud backend
-- create remote database tables matching reports, sections, items, photos, templates, and sync metadata
 - add authentication/account ownership
-- implement the cloud adapter upload/download logic in `sync-service.js`
-- add remote photo/PDF storage
-- implement conflict review UI
-- add tested merge rules for simultaneous edits from iPhone, iPad, and desktop
+- replace sync-space-only RLS with `auth.uid()` ownership policies
+- move large photo libraries from `trueview_photos.data_url` to Supabase Storage objects
+- add a dedicated conflict review UI
+- add deeper tested merge rules for simultaneous edits from iPhone, iPad, and desktop
 - add deletion/archive sync handling
 - add production backup/export strategy
 
 ## Known Production Limitations
 
-- Cloud sync is still pending. The app is local/offline-first and sync-ready, but no Supabase/Firebase/cloud adapter is configured yet.
-- Reports and photos saved in the deployed PWA live in that browser/device storage until true cloud sync is connected.
+- Cloud sync requires the Supabase SQL and Vercel environment variables above. Without them, the app remains local/offline-first and shows Cloud sync not configured.
+- Reports and photos saved before Supabase is configured live in that browser/device storage until the app is configured and allowed to sync.
 - The Mac Desktop folder export endpoint in `server.js` is local-only. It is not available on the static Vercel deployment.
 - Browser PDF share/download works on Vercel; server-side saving to `~/Desktop/TrueView Reports` requires running `npm start` locally on the Mac.
 - GitHub automatic redeploys are enabled through the connected `Ericdimmick/TrueView` Vercel Git integration.
+- Current photo sync stores compressed data URLs in `trueview_photos`. The SQL also creates a private `trueview-photos` bucket for a future larger-photo storage migration.
 
 ## Latest Validation
 
@@ -354,8 +406,8 @@ Validated:
 - `index.html` served with HTTP 200
 - `manifest.webmanifest` served with HTTP 200 and valid JSON
 - `sw.js` served with HTTP 200
-- app shell references `styles.css?v=11`
-- app shell references `app.js?v=11`
+- app shell references `styles.css?v=12`
+- app shell references `app.js?v=12`
 - app shell references `apple-touch-icon.png`
 
 Completed Vercel production deployment:
@@ -370,6 +422,6 @@ Validated in production:
 - `manifest.webmanifest` returned HTTP 200 and valid JSON
 - `sw.js` returned HTTP 200
 - `sw.js` included `Service-Worker-Allowed: /`
-- production app shell references `styles.css?v=11`
-- production app shell references `app.js?v=11`
+- production app shell references `styles.css?v=12`
+- production app shell references `app.js?v=12`
 - production app shell references `apple-touch-icon.png`
