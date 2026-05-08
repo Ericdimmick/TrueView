@@ -85,7 +85,7 @@
     const localRecords = await db.getReportRecords();
     const remoteRows = await fetchRemoteReports();
     const remoteByLocalId = new Map(remoteRows.map((row) => [row.local_id, row]));
-    const queuedReportIds = new Set(queue.filter((entry) => entry.entity === "report" && entry.status !== "synced").map((entry) => entry.entityLocalId));
+    const queuedReportIds = new Set(queue.filter((entry) => entry.entity === "report" && ["pending", "failed"].includes(entry.status)).map((entry) => entry.entityLocalId));
     const pulledReports = [];
     let conflicts = 0;
 
@@ -95,7 +95,7 @@
       const remote = remoteByLocalId.get(localId);
       const localUpdated = timeValue(localReport.updatedAt || localRecord.updatedAt);
       const remoteUpdated = remote ? timeValue(remote.local_updated_at || remote.updated_at) : 0;
-      const hasPendingLocal = queuedReportIds.has(localId) || localRecord.syncStatus === "pending" || localReport.syncStatus === "pending";
+      const hasPendingLocal = queuedReportIds.has(localId);
 
       if (remote && remoteUpdated > localUpdated && hasPendingLocal && remote.device_id !== localRecord.deviceId) {
         await db.markEntityConflict(localId, "report");
@@ -110,7 +110,7 @@
         continue;
       }
 
-      if (!remote || localUpdated >= remoteUpdated || hasPendingLocal) {
+      if (!remote || hasPendingLocal) {
         try {
           const saved = await upsertReport(localRecord);
           await db.markReportSynced(localId, saved.remote_id || remote?.remote_id || "");
@@ -134,7 +134,7 @@
     const localPhotos = await db.getPhotoRecords();
     const remoteRows = await fetchRemotePhotos();
     const remoteByLocalId = new Map(remoteRows.map((row) => [row.local_id, row]));
-    const queuedPhotoIds = new Set(queue.filter((entry) => entry.entity === "photo" && entry.status !== "synced").map((entry) => entry.entityLocalId));
+    const queuedPhotoIds = new Set(queue.filter((entry) => entry.entity === "photo" && ["pending", "failed"].includes(entry.status)).map((entry) => entry.entityLocalId));
     const pulledPhotos = [];
     let conflicts = 0;
 
@@ -143,7 +143,7 @@
       const remote = remoteByLocalId.get(localId);
       const localUpdated = timeValue(localPhoto.updatedAt || localPhoto.createdAt);
       const remoteUpdated = remote ? timeValue(remote.local_updated_at || remote.updated_at) : 0;
-      const hasPendingLocal = queuedPhotoIds.has(localId) || localPhoto.syncStatus === "pending";
+      const hasPendingLocal = queuedPhotoIds.has(localId);
 
       if (remote && remoteUpdated > localUpdated && hasPendingLocal && remote.device_id !== localPhoto.deviceId) {
         await db.markEntityConflict(localId, "photo");
@@ -158,7 +158,7 @@
         continue;
       }
 
-      if (!remote || localUpdated >= remoteUpdated || hasPendingLocal) {
+      if (!remote || hasPendingLocal) {
         try {
           const saved = await upsertPhoto(localPhoto);
           await db.markPhotoSynced(localId, saved.remote_id || remote?.remote_id || "");
@@ -202,7 +202,7 @@
     const payload = {
       sync_space_id: readConfig().syncSpaceId,
       local_id: localRecord.localId || report.id,
-      device_id: report.deviceId || localRecord.deviceId || "",
+      device_id: localRecord.deviceId || report.deviceId || "",
       report,
       property_address: inspection.propertyAddress || "",
       client_name: inspection.clientName || "",

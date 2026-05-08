@@ -1,4 +1,4 @@
-const CACHE_NAME = "trueview-field-v12";
+const CACHE_NAME = "trueview-field-v13";
 const APP_FILES = [
   "./",
   "./index.html",

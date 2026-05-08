@@ -13,7 +13,7 @@ npm start
 Then open:
 
 ```text
-http://localhost:5173/index.html?v=12
+http://localhost:5173/index.html?v=13
 ```
 
 If port 5173 is busy:

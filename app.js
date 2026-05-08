@@ -152,6 +152,7 @@ let suppressSectionClickUntil = 0;
 let localDeviceId = "";
 let offlineDbAvailable = false;
 let saveToDbTimer = null;
+let syncPollTimer = null;
 let syncSummary = { pending: 0, failed: 0, conflicts: 0, syncing: 0, lastSyncedAt: "" };
 let toastTimer = null;
 let saveStatusTimer = null;
@@ -186,6 +187,7 @@ async function boot() {
   await initPhotoStorage();
   registerServiceWorker();
   setupConnectivityListeners();
+  setupSyncRefreshTriggers();
   await refreshSyncSummary();
   render();
   await refreshSyncSummary(Boolean(window.TrueViewSync?.isConfigured() && navigator.onLine));
@@ -810,14 +812,20 @@ function getActiveReport() {
 
 function saveState(options = {}) {
   const now = new Date().toISOString();
+  const localOnly = options.skipQueue === true;
   state.sections = normalizeSectionOrder(state.sections || []);
-  state.updatedAt = now;
-  state.lastSavedAt = now;
-  state.deviceId = state.deviceId || localDeviceId;
-  if (!["Ready for Review", "Finalized", "Conflict"].includes(state.reportStatus)) {
-    state.reportStatus = getReportStatus(state);
+  if (localOnly) {
+    state.lastSavedAt = state.lastSavedAt || now;
+    state.deviceId = state.deviceId || localDeviceId;
+  } else {
+    state.updatedAt = now;
+    state.lastSavedAt = now;
+    state.deviceId = localDeviceId || state.deviceId;
+    if (!["Ready for Review", "Finalized", "Conflict"].includes(state.reportStatus)) {
+      state.reportStatus = getReportStatus(state);
+    }
+    state.syncStatus = "pending";
   }
-  state.syncStatus = "pending";
   upsertCurrentReport();
   persistLibrary();
   scheduleOfflineReportSave(options);
@@ -877,11 +885,30 @@ function setupConnectivityListeners() {
   });
 }
 
+function setupSyncRefreshTriggers() {
+  if (syncPollTimer) clearInterval(syncPollTimer);
+  syncPollTimer = window.setInterval(() => {
+    if (document.hidden || !navigator.onLine || !window.TrueViewSync?.isConfigured()) return;
+    refreshSyncSummary(true);
+  }, 30000);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && navigator.onLine && window.TrueViewSync?.isConfigured()) {
+      refreshSyncSummary(true);
+    }
+  });
+  window.addEventListener("focus", () => {
+    if (navigator.onLine && window.TrueViewSync?.isConfigured()) {
+      refreshSyncSummary(true);
+    }
+  });
+}
+
 async function refreshSyncSummary(attemptSync = false) {
   try {
     if (offlineDbAvailable && window.TrueViewOfflineDB) {
       syncSummary = await window.TrueViewOfflineDB.getSyncSummary();
     }
+    const libraryWasOpen = libraryDrawer && !libraryDrawer.hidden;
     if (attemptSync && window.TrueViewSync) {
       const result = await window.TrueViewSync.attemptSync();
       syncSummary = { ...syncSummary, ...result };
@@ -894,7 +921,7 @@ async function refreshSyncSummary(attemptSync = false) {
         showToast("Cloud reports updated.");
       } else if (markedSynced) {
         persistLibrary();
-        renderLibraryDrawer();
+        if (libraryWasOpen) renderLibraryDrawer();
       }
     }
   } catch (error) {
