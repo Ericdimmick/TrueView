@@ -7,6 +7,12 @@ const PORT = Number(process.env.PORT || 5173);
 const ROOT = __dirname;
 const EXPORT_ROOT = process.env.TRUEVIEW_EXPORT_ROOT || process.env.INSPECTFLOW_EXPORT_ROOT || path.join(os.homedir(), "Desktop", "TrueView Reports");
 const MAX_BODY_BYTES = 160 * 1024 * 1024;
+const VERSIONED_ASSETS = {
+  "styles.v15.css": "styles.css",
+  "app.v15.js": "app.js",
+  "offline-db.v15.js": "offline-db.js",
+  "sync-service.v15.js": "sync-service.js"
+};
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -33,7 +39,7 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
-    if (request.method === "GET" && request.url.split("?")[0] === "/env-config.js") {
+    if (request.method === "GET" && /^\/env-config(?:\.v\d+)?\.js$/.test(request.url.split("?")[0])) {
       sendEnvConfig(response);
       return;
     }
@@ -59,7 +65,8 @@ server.listen(PORT, "::", async () => {
 async function serveStatic(request, response) {
   const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
   const pathname = decodeURIComponent(url.pathname);
-  const relativePath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+  const requestedPath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+  const relativePath = VERSIONED_ASSETS[requestedPath] || requestedPath;
   const filePath = path.resolve(ROOT, relativePath);
 
   if (!filePath.startsWith(ROOT)) {
