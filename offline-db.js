@@ -5,7 +5,7 @@
  */
 (function () {
   const DB_NAME = "trueview.field.offline.v1";
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;
   const DEVICE_KEY = "trueview.deviceId.v1";
 
   /**
@@ -49,6 +49,7 @@
         createStore(db, "inspectionItems", "localId", ["reportId", "sectionId", "syncStatus"]);
         createStore(db, "photos", "localId", ["reportId", "sectionId", "observationId", "syncStatus"]);
         createStore(db, "reportTemplates", "localId", ["updatedAt"]);
+        createStore(db, "deletedReports", "localId", ["remoteId", "deletedAt", "syncStatus"]);
         createStore(db, "appSettings", "key", []);
         createStore(db, "syncQueue", "localId", ["entity", "entityLocalId", "status", "updatedAt"]);
         createStore(db, "syncMeta", "key", []);
@@ -312,6 +313,10 @@
     return getAll("photos");
   }
 
+  async function getDeletedReportRecords() {
+    return getAll("deletedReports");
+  }
+
   async function saveRemoteReport(report, remoteId) {
     const copy = clone(report);
     copy.remoteId = remoteId || copy.remoteId || "";
@@ -406,9 +411,70 @@
     });
   }
 
-  async function deleteReport(reportId) {
+  async function saveRemoteDeletedReport(remoteReport) {
+    const reportId = remoteReport.localId || remoteReport.id;
+    if (!reportId) return;
+    const deletedAt = remoteReport.deletedAt || nowIso();
+    const existing = await get("reports", reportId);
+    await put("deletedReports", {
+      localId: reportId,
+      remoteId: remoteReport.remoteId || existing?.remoteId || "",
+      propertyAddress: remoteReport.propertyAddress || existing?.report?.inspection?.propertyAddress || "",
+      report: remoteReport.report || existing?.report || null,
+      deletedAt,
+      updatedAt: deletedAt,
+      syncStatus: "synced",
+      deviceId: remoteReport.deviceId || getDeviceId()
+    });
+    await removeReportPayload(reportId);
+    await clearQueueForEntity(reportId, "report");
+  }
+
+  async function markReportDeleteSynced(reportId, remoteId) {
+    const record = await get("deletedReports", reportId);
+    if (record) {
+      record.remoteId = remoteId || record.remoteId || "";
+      record.syncStatus = "synced";
+      record.updatedAt = nowIso();
+      await put("deletedReports", record);
+    }
+    await clearQueueForEntity(reportId, "report");
+  }
+
+  async function deleteReport(reportId, report = null, options = {}) {
+    const savedAt = nowIso();
+    const existing = await get("reports", reportId);
+    const source = report || existing?.report || null;
+    await clearQueueForEntity(reportId, "report");
+    if (options.queue !== false) {
+      await put("deletedReports", {
+        localId: reportId,
+        remoteId: source?.remoteId || existing?.remoteId || "",
+        propertyAddress: source?.inspection?.propertyAddress || "",
+        report: source,
+        deletedAt: savedAt,
+        updatedAt: savedAt,
+        syncStatus: "pending",
+        deviceId: getDeviceId()
+      });
+      await enqueueMutation({
+        localId: `${reportId}:report-delete`,
+        entity: "report",
+        entityLocalId: reportId,
+        mutationType: "report-delete",
+        status: "pending",
+        attempts: 0,
+        createdAt: savedAt,
+        updatedAt: savedAt,
+        deviceId: getDeviceId()
+      });
+    }
+    await removeReportPayload(reportId);
+  }
+
+  async function removeReportPayload(reportId) {
     await remove("reports", reportId);
-    const stores = ["reportSections", "inspectionItems", "photos", "syncQueue"];
+    const stores = ["reportSections", "inspectionItems", "photos"];
     const recordsByStore = await Promise.all(stores.map((storeName) => getAll(storeName)));
     await Promise.all(recordsByStore.flatMap((records, index) => {
       const storeName = stores[index];
@@ -426,6 +492,7 @@
     saveReport,
     saveRemoteReport,
     deleteReport,
+    saveRemoteDeletedReport,
     saveSectionTemplates,
     savePhotoMetadata,
     saveRemotePhoto,
@@ -434,7 +501,9 @@
     getSyncSummary,
     getReportRecords,
     getPhotoRecords,
+    getDeletedReportRecords,
     markReportSynced,
+    markReportDeleteSynced,
     markPhotoSynced,
     markEntityConflict,
     markEntityFailed,

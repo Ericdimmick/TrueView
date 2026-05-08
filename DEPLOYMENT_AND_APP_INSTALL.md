@@ -51,7 +51,7 @@ node server.js
 Default local URL:
 
 ```text
-http://localhost:5173/index.html?v=13
+http://localhost:5173/index.html?v=14
 ```
 
 If port `5173` is already busy:
@@ -110,7 +110,7 @@ navigator.serviceWorker.register("./sw.js")
 ```
 
 Offline app shell:
-`sw.js` caches the core app files, manifest, icons, logo, and offline fallback. It also ignores query-string versioning when matching cached assets, which helps `styles.css?v=13` and `app.js?v=13` resolve against the cached app shell. The production service worker is served with `Service-Worker-Allowed: /` and `Cache-Control: no-cache, no-store, must-revalidate`.
+`sw.js` caches the core app files, manifest, icons, logo, and offline fallback. It also ignores query-string versioning when matching cached assets, which helps `styles.css?v=14` and `app.js?v=14` resolve against the cached app shell. The production service worker is served with `Service-Worker-Allowed: /` and `Cache-Control: no-cache, no-store, must-revalidate`.
 
 iOS Safari Home Screen support:
 `index.html` includes:
@@ -259,7 +259,7 @@ For local same-Wi-Fi testing:
 3. On the iPhone, open Safari to:
 
    ```text
-   http://YOUR_MAC_LAN_IP:5173/index.html?v=13
+   http://YOUR_MAC_LAN_IP:5173/index.html?v=14
    ```
 
 4. Wait for the app to load fully once.
@@ -296,7 +296,7 @@ Local offline test:
 2. Open:
 
    ```text
-   http://localhost:5173/index.html?v=13
+   http://localhost:5173/index.html?v=14
    ```
 
 3. Create or edit a report.
@@ -406,8 +406,8 @@ Validated:
 - `index.html` served with HTTP 200
 - `manifest.webmanifest` served with HTTP 200 and valid JSON
 - `sw.js` served with HTTP 200
-- app shell references `styles.css?v=13`
-- app shell references `app.js?v=13`
+- app shell references `styles.css?v=14`
+- app shell references `app.js?v=14`
 - app shell references `apple-touch-icon.png`
 
 Completed Vercel production deployment:
@@ -422,6 +422,6 @@ Validated in production:
 - `manifest.webmanifest` returned HTTP 200 and valid JSON
 - `sw.js` returned HTTP 200
 - `sw.js` included `Service-Worker-Allowed: /`
-- production app shell references `styles.css?v=13`
-- production app shell references `app.js?v=13`
+- production app shell references `styles.css?v=14`
+- production app shell references `app.js?v=14`
 - production app shell references `apple-touch-icon.png`

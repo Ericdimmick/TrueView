@@ -588,8 +588,8 @@ function normalizeItem(item, sectionId, index) {
   };
 }
 
-function normalizeSectionOrder(sections) {
-  const ordered = [...sections].sort((a, b) => {
+function normalizeSectionOrder(sections, options = {}) {
+  const ordered = options.preserveInputOrder ? [...sections] : [...sections].sort((a, b) => {
     const orderA = Number.isFinite(Number(a.sortOrder)) ? Number(a.sortOrder) : 9999;
     const orderB = Number.isFinite(Number(b.sortOrder)) ? Number(b.sortOrder) : 9999;
     return orderA - orderB;
@@ -912,13 +912,14 @@ async function refreshSyncSummary(attemptSync = false) {
     if (attemptSync && window.TrueViewSync) {
       const result = await window.TrueViewSync.attemptSync();
       syncSummary = { ...syncSummary, ...result };
+      const deletedReportsChanged = removeSyncedDeletedReports(result.deletedReportIds || []);
       const changedReports = mergeSyncedReports(result.pulledReports || []);
       await cacheSyncedPhotos(result.pulledPhotos || []);
       const markedSynced = markInMemoryReportsSynced(result);
-      if (changedReports && state) {
+      if ((changedReports || deletedReportsChanged) && state) {
         persistLibrary();
         render();
-        showToast("Cloud reports updated.");
+        if (changedReports) showToast("Cloud reports updated.");
       } else if (markedSynced) {
         persistLibrary();
         if (libraryWasOpen) renderLibraryDrawer();
@@ -928,6 +929,28 @@ async function refreshSyncSummary(attemptSync = false) {
     console.warn(error);
   }
   updateSyncIndicator();
+}
+
+function removeSyncedDeletedReports(reportIds) {
+  if (!Array.isArray(reportIds) || !reportIds.length || !library) return false;
+  const ids = new Set(reportIds);
+  const before = library.reports.length;
+  library.reports = library.reports.filter((report) => !ids.has(report.id));
+  if (library.reports.length === before) return false;
+  if (!library.reports.length) {
+    const replacement = createDefaultState();
+    library.reports.push(replacement);
+    library.activeReportId = replacement.id;
+    state = replacement;
+    return true;
+  }
+  if (!library.reports.some((report) => report.id === library.activeReportId)) {
+    library.activeReportId = getSortedReports()[0].id;
+  }
+  if (!state || ids.has(state.id)) {
+    state = getActiveReport();
+  }
+  return true;
 }
 
 function markInMemoryReportsSynced(result) {
@@ -1088,7 +1111,15 @@ async function deletePhoto(id) {
 
 function registerServiceWorker() {
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js").catch(() => {});
+    let reloadingForUpdate = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (reloadingForUpdate) return;
+      reloadingForUpdate = true;
+      window.location.reload();
+    });
+    navigator.serviceWorker.register("./sw.js").then((registration) => {
+      registration.update?.();
+    }).catch(() => {});
   }
 }
 
@@ -2245,7 +2276,7 @@ async function deleteSavedReport(reportId) {
     await deletePhoto(id);
   }
   if (offlineDbAvailable && window.TrueViewOfflineDB) {
-    await window.TrueViewOfflineDB.deleteReport(reportId).catch((error) => console.warn(error));
+    await window.TrueViewOfflineDB.deleteReport(reportId, report).catch((error) => console.warn(error));
   }
 
   library.reports = library.reports.filter((entry) => entry.id !== reportId);
@@ -2261,6 +2292,7 @@ async function deleteSavedReport(reportId) {
   persistLibrary();
   render();
   renderLibraryDrawer();
+  await refreshSyncSummary(Boolean(window.TrueViewSync?.isConfigured() && navigator.onLine));
   showToast("Report deleted.");
 }
 
@@ -2309,7 +2341,7 @@ function duplicateSection(sectionId) {
   duplicate.items = section.items.map((item, index) => createItem(duplicate.id, item.title, index));
   const index = state.sections.findIndex((entry) => entry.id === section.id);
   state.sections.splice(index + 1, 0, duplicate);
-  normalizeSectionOrder(state.sections);
+  state.sections = normalizeSectionOrder(state.sections, { preserveInputOrder: true });
   state.currentSectionId = duplicate.id;
   saveState({ manual: true, mutationType: "section-duplicate" });
   render();
@@ -2337,7 +2369,7 @@ function reorderActiveSections(sourceId, targetId, position = "before") {
   if (position === "after") insertIndex += 1;
   active.splice(insertIndex, 0, moved);
   const archived = getArchivedSections();
-  state.sections = normalizeSectionOrder([...active, ...archived]);
+  state.sections = normalizeSectionOrder([...active, ...archived], { preserveInputOrder: true });
   return true;
 }
 

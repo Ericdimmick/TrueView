@@ -71,6 +71,7 @@
       return {
         ...summaryResult(nextSummary, "synced", "Synced", true),
         pulledReports: reportResult.pulledReports,
+        deletedReportIds: reportResult.deletedReportIds,
         pulledPhotos: photoResult.pulledPhotos,
         conflicts: nextSummary.conflicts + reportResult.conflicts + photoResult.conflicts
       };
@@ -83,19 +84,42 @@
 
   async function syncReports(db, queue) {
     const localRecords = await db.getReportRecords();
+    const deletedRecords = db.getDeletedReportRecords ? await db.getDeletedReportRecords() : [];
     const remoteRows = await fetchRemoteReports();
     const remoteByLocalId = new Map(remoteRows.map((row) => [row.local_id, row]));
-    const queuedReportIds = new Set(queue.filter((entry) => entry.entity === "report" && ["pending", "failed"].includes(entry.status)).map((entry) => entry.entityLocalId));
+    const deletedIds = new Set(deletedRecords.map((record) => record.localId));
+    const queuedReportIds = new Set(queue.filter((entry) => entry.entity === "report" && entry.mutationType !== "report-delete" && ["pending", "failed"].includes(entry.status)).map((entry) => entry.entityLocalId));
+    const queuedDeleteIds = new Set(queue.filter((entry) => entry.entity === "report" && entry.mutationType === "report-delete" && ["pending", "failed"].includes(entry.status)).map((entry) => entry.entityLocalId));
     const pulledReports = [];
+    const deletedReportIds = [];
     let conflicts = 0;
+
+    for (const deletedRecord of deletedRecords) {
+      const localId = deletedRecord.localId;
+      const remote = remoteByLocalId.get(localId);
+      if (!queuedDeleteIds.has(localId) && deletedRecord.syncStatus === "synced") continue;
+      try {
+        const saved = await upsertReportDeletion(deletedRecord, remote);
+        await db.markReportDeleteSynced(localId, saved.remote_id || remote?.remote_id || "");
+      } catch (error) {
+        await db.markEntityFailed(localId, "report", error.message);
+      }
+    }
 
     for (const localRecord of localRecords) {
       const localReport = localRecord.report || {};
       const localId = localRecord.localId || localReport.id;
+      if (deletedIds.has(localId)) continue;
       const remote = remoteByLocalId.get(localId);
       const localUpdated = timeValue(localReport.updatedAt || localRecord.updatedAt);
-      const remoteUpdated = remote ? timeValue(remote.local_updated_at || remote.updated_at) : 0;
+      const remoteUpdated = remote ? remoteReportTime(remote) : 0;
       const hasPendingLocal = queuedReportIds.has(localId);
+
+      if (remote?.deleted_at && !hasPendingLocal && remoteUpdated >= localUpdated) {
+        await db.saveRemoteDeletedReport(normalizeRemoteDeletedReport(remote));
+        deletedReportIds.push(localId);
+        continue;
+      }
 
       if (remote && remoteUpdated > localUpdated && hasPendingLocal && remote.device_id !== localRecord.deviceId) {
         await db.markEntityConflict(localId, "report");
@@ -122,12 +146,18 @@
 
     for (const remote of remoteRows) {
       if (localRecords.some((record) => (record.localId || record.report?.id) === remote.local_id)) continue;
+      if (deletedIds.has(remote.local_id)) continue;
+      if (remote.deleted_at) {
+        await db.saveRemoteDeletedReport(normalizeRemoteDeletedReport(remote));
+        deletedReportIds.push(remote.local_id);
+        continue;
+      }
       const pulled = normalizeRemoteReport(remote);
       await db.saveRemoteReport(pulled, remote.remote_id);
       pulledReports.push(pulled);
     }
 
-    return { pulledReports, conflicts };
+    return { pulledReports, deletedReportIds, conflicts };
   }
 
   async function syncPhotos(db, queue) {
@@ -208,7 +238,38 @@
       client_name: inspection.clientName || "",
       inspection_date: inspection.inspectionDate || null,
       report_status: report.reportStatus || "Draft",
-      local_updated_at: report.updatedAt || localRecord.updatedAt || new Date().toISOString()
+      local_updated_at: report.updatedAt || localRecord.updatedAt || new Date().toISOString(),
+      deleted_at: null
+    };
+    const response = await fetch(tableUrl(REPORT_TABLE, "?on_conflict=sync_space_id,local_id"), {
+      method: "POST",
+      headers: supabaseHeaders("resolution=merge-duplicates,return=representation"),
+      body: JSON.stringify(payload)
+    });
+    const rows = await readSupabaseJson(response);
+    return rows[0] || payload;
+  }
+
+  async function upsertReportDeletion(deletedRecord, remote) {
+    const report = deletedRecord.report || remote?.report || { id: deletedRecord.localId };
+    const inspection = report.inspection || {};
+    const deletedAt = deletedRecord.deletedAt || new Date().toISOString();
+    const payload = {
+      sync_space_id: readConfig().syncSpaceId,
+      local_id: deletedRecord.localId,
+      device_id: deletedRecord.deviceId || "",
+      report: {
+        ...report,
+        id: report.id || deletedRecord.localId,
+        deletedAt,
+        syncStatus: "synced"
+      },
+      property_address: deletedRecord.propertyAddress || inspection.propertyAddress || remote?.property_address || "",
+      client_name: inspection.clientName || remote?.client_name || "",
+      inspection_date: inspection.inspectionDate || remote?.inspection_date || null,
+      report_status: "Deleted",
+      local_updated_at: deletedAt,
+      deleted_at: deletedAt
     };
     const response = await fetch(tableUrl(REPORT_TABLE, "?on_conflict=sync_space_id,local_id"), {
       method: "POST",
@@ -261,6 +322,26 @@
       syncStatus: "synced",
       updatedAt: report.updatedAt || row.local_updated_at || row.updated_at
     };
+  }
+
+  function normalizeRemoteDeletedReport(row) {
+    return {
+      localId: row.local_id,
+      id: row.local_id,
+      remoteId: row.remote_id || "",
+      report: row.report || null,
+      propertyAddress: row.property_address || "",
+      deletedAt: row.deleted_at || row.local_updated_at || row.updated_at,
+      deviceId: row.device_id || ""
+    };
+  }
+
+  function remoteReportTime(row) {
+    return Math.max(
+      timeValue(row.local_updated_at),
+      timeValue(row.deleted_at),
+      timeValue(row.updated_at)
+    );
   }
 
   function normalizeRemotePhoto(row) {
