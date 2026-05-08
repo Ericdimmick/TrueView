@@ -68,12 +68,20 @@
       ]);
       await db.setSyncMeta({ lastSyncedAt: new Date().toISOString() });
       const nextSummary = await db.getSyncSummary();
+      const failed = nextSummary.failed + reportResult.failedReportIds.length;
+      const conflicts = nextSummary.conflicts + reportResult.conflicts + photoResult.conflicts;
+      const status = failed ? "failed" : conflicts ? "conflict" : "synced";
+      const message = failed ? "Sync failed - saved locally" : conflicts ? "Sync conflict" : "Synced";
       return {
-        ...summaryResult(nextSummary, "synced", "Synced", true),
+        ...summaryResult(nextSummary, status, message, !failed && !conflicts),
         pulledReports: reportResult.pulledReports,
         deletedReportIds: reportResult.deletedReportIds,
         pulledPhotos: photoResult.pulledPhotos,
-        conflicts: nextSummary.conflicts + reportResult.conflicts + photoResult.conflicts
+        syncedReportIds: reportResult.syncedReportIds,
+        pushedReportIds: reportResult.pushedReportIds,
+        failedReportIds: reportResult.failedReportIds,
+        conflictReportIds: reportResult.conflictReportIds,
+        conflicts
       };
     } catch (error) {
       console.warn(error);
@@ -100,11 +108,18 @@
 
     try {
       const result = await syncLibraryReports(library, options);
+      const nextSummary = getLibrarySummary(library, new Date().toISOString());
+      const status = nextSummary.failed ? "failed" : nextSummary.conflicts ? "conflict" : "synced";
+      const message = nextSummary.failed ? "Sync failed - saved locally" : nextSummary.conflicts ? "Sync conflict" : "Synced";
       return {
-        ...summaryResult({ pending: 0, failed: 0, conflicts: result.conflicts, lastSyncedAt: new Date().toISOString() }, "synced", "Synced", true),
+        ...summaryResult(nextSummary, status, message, !nextSummary.failed && !nextSummary.conflicts),
         pulledReports: result.pulledReports,
         deletedReportIds: result.deletedReportIds,
-        pulledPhotos: []
+        pulledPhotos: [],
+        syncedReportIds: result.syncedReportIds,
+        pushedReportIds: result.pushedReportIds,
+        failedReportIds: result.failedReportIds,
+        conflictReportIds: result.conflictReportIds
       };
     } catch (error) {
       console.warn(error);
@@ -119,27 +134,25 @@
     const localIds = new Set(localReports.map((report) => report.id));
     const pulledReports = [];
     const deletedReportIds = [];
+    const syncedReportIds = [];
+    const pushedReportIds = [];
+    const failedReportIds = [];
+    const conflictReportIds = [];
     let conflicts = 0;
 
     for (const report of localReports) {
       const remote = remoteByLocalId.get(report.id);
       const localUpdated = timeValue(report.updatedAt || report.lastSavedAt || report.createdAt);
       const remoteUpdated = remote ? remoteReportTime(remote) : 0;
-      const hasPendingLocal = report.syncStatus === "pending" || !remote;
+      const hasPendingLocal = ["pending", "failed"].includes(report.syncStatus) || !remote;
+      const deviceId = options.deviceId || report.deviceId || "";
 
-      if (remote?.deleted_at && !hasPendingLocal && remoteUpdated >= localUpdated) {
+      if (remote?.deleted_at && remoteUpdated >= localUpdated) {
         deletedReportIds.push(report.id);
         continue;
       }
 
-      if (remote && remoteUpdated > localUpdated && hasPendingLocal && remote.device_id && remote.device_id !== (report.deviceId || options.deviceId || "")) {
-        report.syncStatus = "conflict";
-        report.reportStatus = "Conflict";
-        conflicts += 1;
-        continue;
-      }
-
-      if (remote && remoteUpdated > localUpdated && !hasPendingLocal) {
+      if (remote && remoteUpdated > localUpdated) {
         pulledReports.push(normalizeRemoteReport(remote));
         continue;
       }
@@ -148,18 +161,30 @@
         continue;
       }
 
-      if (!remote || localUpdated >= remoteUpdated || hasPendingLocal) {
-        const saved = await upsertReport({
-          localId: report.id,
-          deviceId: options.deviceId || report.deviceId || "",
-          updatedAt: report.updatedAt || report.lastSavedAt || new Date().toISOString(),
-          report: {
-            ...report,
-            deviceId: options.deviceId || report.deviceId || ""
-          }
-        });
-        report.remoteId = saved.remote_id || report.remoteId || "";
+      if (!remote || hasPendingLocal || localUpdated >= remoteUpdated) {
+        try {
+          const saved = await upsertReport({
+            localId: report.id,
+            deviceId,
+            updatedAt: report.updatedAt || report.lastSavedAt || new Date().toISOString(),
+            report: {
+              ...report,
+              deviceId
+            }
+          });
+          report.remoteId = saved.remote_id || report.remoteId || "";
+          report.syncStatus = "synced";
+          syncedReportIds.push(report.id);
+          pushedReportIds.push(report.id);
+        } catch (error) {
+          console.warn(error);
+          report.syncStatus = "failed";
+          failedReportIds.push(report.id);
+        }
+      } else if (remote) {
+        report.remoteId = remote.remote_id || report.remoteId || "";
         report.syncStatus = "synced";
+        syncedReportIds.push(report.id);
       }
     }
 
@@ -172,7 +197,7 @@
       pulledReports.push(normalizeRemoteReport(remote));
     }
 
-    return { pulledReports, deletedReportIds, conflicts };
+    return { pulledReports, deletedReportIds, syncedReportIds, pushedReportIds, failedReportIds, conflictReportIds, conflicts };
   }
 
   async function syncReports(db, queue) {
@@ -185,6 +210,10 @@
     const queuedDeleteIds = new Set(queue.filter((entry) => entry.entity === "report" && entry.mutationType === "report-delete" && ["pending", "failed"].includes(entry.status)).map((entry) => entry.entityLocalId));
     const pulledReports = [];
     const deletedReportIds = [];
+    const syncedReportIds = [];
+    const pushedReportIds = [];
+    const failedReportIds = [];
+    const conflictReportIds = [];
     let conflicts = 0;
 
     for (const deletedRecord of deletedRecords) {
@@ -206,34 +235,38 @@
       const remote = remoteByLocalId.get(localId);
       const localUpdated = timeValue(localReport.updatedAt || localRecord.updatedAt);
       const remoteUpdated = remote ? remoteReportTime(remote) : 0;
-      const hasPendingLocal = queuedReportIds.has(localId);
+      const hasPendingLocal = queuedReportIds.has(localId) || ["pending", "failed"].includes(localRecord.syncStatus) || ["pending", "failed"].includes(localReport.syncStatus);
 
-      if (remote?.deleted_at && !hasPendingLocal && remoteUpdated >= localUpdated) {
+      if (remote?.deleted_at && remoteUpdated >= localUpdated) {
         await db.saveRemoteDeletedReport(normalizeRemoteDeletedReport(remote));
         deletedReportIds.push(localId);
         continue;
       }
 
-      if (remote && remoteUpdated > localUpdated && hasPendingLocal && remote.device_id !== localRecord.deviceId) {
-        await db.markEntityConflict(localId, "report");
-        conflicts += 1;
-        continue;
-      }
-
-      if (remote && remoteUpdated > localUpdated && !hasPendingLocal) {
+      if (remote && remoteUpdated > localUpdated) {
         const pulled = normalizeRemoteReport(remote);
         await db.saveRemoteReport(pulled, remote.remote_id);
         pulledReports.push(pulled);
         continue;
       }
 
-      if (!remote || hasPendingLocal) {
+      if (!remote && isBlankStarterReport(localReport)) {
+        continue;
+      }
+
+      if (!remote || hasPendingLocal || localUpdated >= remoteUpdated) {
         try {
           const saved = await upsertReport(localRecord);
           await db.markReportSynced(localId, saved.remote_id || remote?.remote_id || "");
+          syncedReportIds.push(localId);
+          pushedReportIds.push(localId);
         } catch (error) {
           await db.markEntityFailed(localId, "report", error.message);
+          failedReportIds.push(localId);
         }
+      } else if (remote) {
+        await db.markReportSynced(localId, remote.remote_id || "");
+        syncedReportIds.push(localId);
       }
     }
 
@@ -250,7 +283,7 @@
       pulledReports.push(pulled);
     }
 
-    return { pulledReports, deletedReportIds, conflicts };
+    return { pulledReports, deletedReportIds, syncedReportIds, pushedReportIds, failedReportIds, conflictReportIds, conflicts };
   }
 
   async function syncPhotos(db, queue) {
@@ -322,11 +355,18 @@
   async function upsertReport(localRecord) {
     const report = localRecord.report || {};
     const inspection = report.inspection || {};
+    const deviceId = localRecord.deviceId || report.deviceId || "";
+    const reportPayload = {
+      ...report,
+      id: report.id || localRecord.localId,
+      deviceId,
+      syncStatus: "synced"
+    };
     const payload = {
       sync_space_id: readConfig().syncSpaceId,
       local_id: localRecord.localId || report.id,
-      device_id: localRecord.deviceId || report.deviceId || "",
-      report,
+      device_id: deviceId,
+      report: reportPayload,
       property_address: inspection.propertyAddress || "",
       client_name: inspection.clientName || "",
       inspection_date: inspection.inspectionDate || null,
@@ -413,7 +453,8 @@
       id: report.id || row.local_id,
       remoteId: row.remote_id || report.remoteId || "",
       syncStatus: "synced",
-      updatedAt: report.updatedAt || row.local_updated_at || row.updated_at
+      updatedAt: row.local_updated_at || report.updatedAt || row.updated_at,
+      lastSavedAt: row.local_updated_at || report.lastSavedAt || report.updatedAt || row.updated_at
     };
   }
 
@@ -430,11 +471,8 @@
   }
 
   function remoteReportTime(row) {
-    return Math.max(
-      timeValue(row.local_updated_at),
-      timeValue(row.deleted_at),
-      timeValue(row.updated_at)
-    );
+    if (row.deleted_at) return timeValue(row.deleted_at);
+    return timeValue(row.local_updated_at || row.report?.updatedAt || row.updated_at);
   }
 
   function normalizeRemotePhoto(row) {
@@ -456,7 +494,7 @@
   }
 
   function isBlankStarterReport(report) {
-    if (!report || report.remoteId || report.exportedAt || report.exportFolder || report.exportPdfPath) return false;
+    if (!report || report.userCreated || report.remoteId || report.exportedAt || report.exportFolder || report.exportPdfPath) return false;
 
     const ignoredInspectionKeys = new Set(["inspectionDate", "companyName"]);
     const inspectionHasContent = Object.entries(report.inspection || {}).some(([key, value]) => {
@@ -476,6 +514,17 @@
         return !hasObservations && !hasStatus && !changedCondition;
       });
     });
+  }
+
+  function getLibrarySummary(library, lastSyncedAt = "") {
+    const reports = library?.reports || [];
+    return {
+      pending: reports.filter((report) => report.syncStatus === "pending").length,
+      failed: reports.filter((report) => report.syncStatus === "failed").length,
+      conflicts: reports.filter((report) => report.syncStatus === "conflict").length,
+      syncing: 0,
+      lastSyncedAt
+    };
   }
 
   function timeValue(value) {

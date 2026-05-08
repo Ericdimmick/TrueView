@@ -206,6 +206,7 @@ function createDefaultState() {
     exportFolderName: "",
     exportFolder: "",
     exportPdfPath: "",
+    userCreated: false,
     reportStatus: "Draft",
     syncStatus: "pending",
     remoteId: "",
@@ -793,6 +794,7 @@ function migrateState(saved) {
     exportFolderName: saved.exportFolderName || "",
     exportFolder: saved.exportFolder || "",
     exportPdfPath: saved.exportPdfPath || "",
+    userCreated: Boolean(saved.userCreated),
     reportStatus: saved.reportStatus || saved.status || "Draft",
     syncStatus: saved.syncStatus || "pending",
     remoteId: saved.remoteId || "",
@@ -940,7 +942,6 @@ async function refreshSyncSummary(attemptSync = false) {
       if ((changedReports || deletedReportsChanged) && state) {
         persistLibrary();
         render();
-        if (changedReports) showToast("Cloud reports updated.");
       } else if (markedSynced) {
         persistLibrary();
         if (libraryWasOpen) renderLibraryDrawer();
@@ -989,16 +990,35 @@ function removeSyncedDeletedReports(reportIds) {
 }
 
 function markInMemoryReportsSynced(result) {
-  if (!result?.ok || result.pending || result.failed || result.conflicts || !library) return false;
+  if (!result || !library) return false;
+  const syncedIds = new Set(result.syncedReportIds || []);
+  const failedIds = new Set(result.failedReportIds || []);
+  const conflictIds = new Set(result.conflictReportIds || []);
+  if (!syncedIds.size && !failedIds.size && !conflictIds.size) return false;
+
   let changed = false;
   library.reports.forEach((report) => {
-    if (report.syncStatus !== "synced") {
+    if (syncedIds.has(report.id) && report.syncStatus !== "synced") {
       report.syncStatus = "synced";
+      changed = true;
+    } else if (failedIds.has(report.id) && report.syncStatus !== "failed") {
+      report.syncStatus = "failed";
+      changed = true;
+    } else if (conflictIds.has(report.id) && report.syncStatus !== "conflict") {
+      report.syncStatus = "conflict";
+      report.reportStatus = "Conflict";
       changed = true;
     }
   });
-  if (state && state.syncStatus !== "synced") {
+  if (state && syncedIds.has(state.id) && state.syncStatus !== "synced") {
     state.syncStatus = "synced";
+    changed = true;
+  } else if (state && failedIds.has(state.id) && state.syncStatus !== "failed") {
+    state.syncStatus = "failed";
+    changed = true;
+  } else if (state && conflictIds.has(state.id) && state.syncStatus !== "conflict") {
+    state.syncStatus = "conflict";
+    state.reportStatus = "Conflict";
     changed = true;
   }
   return changed;
@@ -1050,7 +1070,7 @@ function adoptPulledReportsOverBlankStarter(reports) {
 }
 
 function isBlankStarterReport(report) {
-  if (!report || report.remoteId || report.exportedAt || report.exportFolder || report.exportPdfPath) return false;
+  if (!report || report.userCreated || report.remoteId || report.exportedAt || report.exportFolder || report.exportPdfPath) return false;
 
   const ignoredInspectionKeys = new Set(["inspectionDate", "companyName"]);
   const inspectionHasContent = Object.entries(report.inspection || {}).some(([key, value]) => {
@@ -2330,9 +2350,10 @@ function cssEscape(value) {
 function createNewReport() {
   saveState();
   state = createDefaultState();
+  state.userCreated = true;
   library.activeReportId = state.id;
   library.reports.unshift(state);
-  persistLibrary();
+  saveState({ manual: true, mutationType: "report-create" });
   closeOverlays();
   render();
   showToast("New inspection started.");
