@@ -681,10 +681,10 @@ function nextSectionDisplayName(templateId, fallbackLabel) {
 async function initOfflineDatabase() {
   try {
     if (!window.TrueViewOfflineDB || !("indexedDB" in window)) return;
-    await window.TrueViewOfflineDB.open();
     localDeviceId = window.TrueViewOfflineDB.getDeviceId();
+    await withTimeout(window.TrueViewOfflineDB.open(), 1800, "Local database took too long to open.");
     offlineDbAvailable = true;
-    await window.TrueViewOfflineDB.saveSectionTemplates(getSectionTemplateCatalog());
+    await withTimeout(window.TrueViewOfflineDB.saveSectionTemplates(getSectionTemplateCatalog()), 1800, "Section template save took too long.");
   } catch (error) {
     console.warn(error);
     offlineDbAvailable = false;
@@ -694,7 +694,7 @@ async function initOfflineDatabase() {
 async function loadLibrary() {
   try {
     if (offlineDbAvailable) {
-      const dbLibrary = await window.TrueViewOfflineDB.loadLibrary();
+      const dbLibrary = await withTimeout(window.TrueViewOfflineDB.loadLibrary(), 1800, "Local report library took too long to open.");
       if (dbLibrary && Array.isArray(dbLibrary.reports) && dbLibrary.reports.length) {
         return {
           activeReportId: dbLibrary.activeReportId,
@@ -724,6 +724,18 @@ async function loadLibrary() {
     console.warn(error);
     return createLibraryWithReport(createDefaultState());
   }
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  let timer = null;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = window.setTimeout(() => reject(new Error(message || "Operation timed out.")), timeoutMs);
+    })
+  ]).finally(() => {
+    if (timer) window.clearTimeout(timer);
+  });
 }
 
 function createLibraryWithReport(report) {

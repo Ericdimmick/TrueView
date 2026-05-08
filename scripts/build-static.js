@@ -4,10 +4,10 @@ const path = require("path");
 const ROOT = path.resolve(__dirname, "..");
 const OUT_DIR = path.join(ROOT, "public");
 const VERSIONED_ASSETS = {
-  "styles.css": "styles.v15.css",
-  "app.js": "app.v15.js",
-  "offline-db.js": "offline-db.v15.js",
-  "sync-service.js": "sync-service.v15.js"
+  "styles.css": "styles.v16.css",
+  "app.js": "app.v16.js",
+  "offline-db.js": "offline-db.v16.js",
+  "sync-service.js": "sync-service.v16.js"
 };
 
 const STATIC_FILES = [
@@ -48,7 +48,7 @@ async function build() {
     })
   );
   await fs.writeFile(path.join(OUT_DIR, "env-config.js"), buildEnvConfig(), "utf8");
-  await fs.writeFile(path.join(OUT_DIR, "env-config.v15.js"), buildEnvConfig(), "utf8");
+  await fs.writeFile(path.join(OUT_DIR, "env-config.v16.js"), buildEnvConfig(), "utf8");
 
   console.log(`Static PWA build written to ${path.relative(ROOT, OUT_DIR)}`);
 }

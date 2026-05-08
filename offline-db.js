@@ -56,6 +56,11 @@
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
+      request.onblocked = () => reject(new Error("Local database upgrade is blocked by an older TrueView tab. Close and reopen the app to finish the upgrade."));
+    });
+    dbPromise = dbPromise.catch((error) => {
+      dbPromise = null;
+      throw error;
     });
     return dbPromise;
   }
