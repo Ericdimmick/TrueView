@@ -858,9 +858,14 @@ function persistLibrary() {
 }
 
 function scheduleOfflineReportSave(options = {}) {
-  if (!offlineDbAvailable || !window.TrueViewOfflineDB) return;
   clearTimeout(saveToDbTimer);
   const delay = options.manual || options.mutationType?.startsWith("section-") ? 80 : 420;
+  if (!offlineDbAvailable || !window.TrueViewOfflineDB) {
+    if (!options.skipQueue && navigator.onLine && window.TrueViewSync?.isConfigured()) {
+      saveToDbTimer = setTimeout(() => refreshSyncSummary(true), delay);
+    }
+    return;
+  }
   saveToDbTimer = setTimeout(async () => {
     try {
       await window.TrueViewOfflineDB.saveReport(state, {
@@ -919,10 +924,14 @@ async function refreshSyncSummary(attemptSync = false) {
   try {
     if (offlineDbAvailable && window.TrueViewOfflineDB) {
       syncSummary = await window.TrueViewOfflineDB.getSyncSummary();
+    } else {
+      syncSummary = getBrowserOnlySyncSummary();
     }
     const libraryWasOpen = libraryDrawer && !libraryDrawer.hidden;
     if (attemptSync && window.TrueViewSync) {
-      const result = await window.TrueViewSync.attemptSync();
+      const result = offlineDbAvailable
+        ? await window.TrueViewSync.attemptSync()
+        : await window.TrueViewSync.syncLibrary(library, { deviceId: localDeviceId });
       syncSummary = { ...syncSummary, ...result };
       const deletedReportsChanged = removeSyncedDeletedReports(result.deletedReportIds || []);
       const changedReports = mergeSyncedReports(result.pulledReports || []);
@@ -941,6 +950,20 @@ async function refreshSyncSummary(attemptSync = false) {
     console.warn(error);
   }
   updateSyncIndicator();
+}
+
+function getBrowserOnlySyncSummary() {
+  const pending = (library?.reports || []).filter((report) => report.syncStatus === "pending").length;
+  const failed = (library?.reports || []).filter((report) => report.syncStatus === "failed").length;
+  const conflicts = (library?.reports || []).filter((report) => report.syncStatus === "conflict").length;
+  return {
+    pending,
+    failed,
+    conflicts,
+    syncing: 0,
+    lastSyncedAt: syncSummary.lastSyncedAt || "",
+    queue: []
+  };
 }
 
 function removeSyncedDeletedReports(reportIds) {
@@ -1003,7 +1026,57 @@ function mergeSyncedReports(reports) {
       changed = true;
     }
   });
-  return changed;
+  return adoptPulledReportsOverBlankStarter(reports) || changed;
+}
+
+function adoptPulledReportsOverBlankStarter(reports) {
+  const active = library.reports.find((report) => report.id === library.activeReportId) || state;
+  if (!isBlankStarterReport(active)) return false;
+
+  const pulledIds = new Set(reports.map((report) => report.id).filter(Boolean));
+  const replacement = getSortedReports().find((report) => pulledIds.has(report.id) && !isBlankStarterReport(report));
+  if (!replacement) return false;
+
+  const blankId = active.id;
+  library.reports = library.reports.filter((report) => report.id !== blankId);
+  library.activeReportId = replacement.id;
+  state = replacement;
+
+  if (offlineDbAvailable && window.TrueViewOfflineDB) {
+    window.TrueViewOfflineDB.deleteReport(blankId, active, { queue: false }).catch((error) => console.warn(error));
+  }
+
+  return true;
+}
+
+function isBlankStarterReport(report) {
+  if (!report || report.remoteId || report.exportedAt || report.exportFolder || report.exportPdfPath) return false;
+
+  const ignoredInspectionKeys = new Set(["inspectionDate", "companyName"]);
+  const inspectionHasContent = Object.entries(report.inspection || {}).some(([key, value]) => {
+    if (ignoredInspectionKeys.has(key)) return false;
+    return String(value || "").trim().length > 0;
+  });
+  if (inspectionHasContent) return false;
+
+  const defaultSections = createSections();
+  const sections = report.sections || [];
+  if (!sections.length) return true;
+  if (sections.length !== defaultSections.length) return false;
+
+  return sections.every((section, index) => {
+    const defaultSection = defaultSections[index];
+    if (!defaultSection || section.id !== defaultSection.id) return false;
+    if (section.isArchived || section.isApplicable === false || section.deletedAt) return false;
+    if ((section.displayName || section.title || "") !== (section.title || defaultSection.title)) return false;
+    if (Number.isFinite(Number(section.sortOrder)) && Number(section.sortOrder) !== index + 1) return false;
+    return (section.items || []).every((item) => {
+      const hasObservations = Array.isArray(item.observations) && item.observations.length > 0;
+      const hasStatus = String(item.status || "").trim().length > 0;
+      const changedCondition = item.condition && item.condition !== "satisfactory";
+      return !hasObservations && !hasStatus && !changedCondition;
+    });
+  });
 }
 
 async function cacheSyncedPhotos(photos) {
@@ -2203,6 +2276,7 @@ function finishSectionDrag() {
     state.sections = normalizeSectionOrder(state.sections);
     saveState({ manual: true, mutationType: "section-drag-reorder" });
     render();
+    if (sectionDrawer && !sectionDrawer.hidden) renderSectionDrawer();
     showToast("Section order saved.");
   }
 }

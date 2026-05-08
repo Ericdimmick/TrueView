@@ -1,12 +1,12 @@
-const CACHE_NAME = "trueview-field-v16";
+const CACHE_NAME = "trueview-field-v19";
 const APP_FILES = [
   "./",
   "./index.html",
-  "./styles.v16.css",
-  "./env-config.v16.js",
-  "./app.v16.js",
-  "./offline-db.v16.js",
-  "./sync-service.v16.js",
+  "./styles.v19.css",
+  "./env-config.v19.js",
+  "./app.v19.js",
+  "./offline-db.v19.js",
+  "./sync-service.v19.js",
   "./manifest.webmanifest",
   "./apple-touch-icon.png",
   "./icon-192.png",

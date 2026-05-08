@@ -82,6 +82,99 @@
     }
   }
 
+  async function syncLibrary(library, options = {}) {
+    const summary = {
+      pending: (library?.reports || []).filter((report) => report.syncStatus === "pending").length,
+      failed: (library?.reports || []).filter((report) => report.syncStatus === "failed").length,
+      conflicts: (library?.reports || []).filter((report) => report.syncStatus === "conflict").length,
+      lastSyncedAt: ""
+    };
+
+    if (!navigator.onLine) {
+      return summaryResult(summary, "offline", "Offline - saved locally", false);
+    }
+
+    if (!isConfigured()) {
+      return summaryResult(summary, "not-configured", "Cloud sync not configured", false);
+    }
+
+    try {
+      const result = await syncLibraryReports(library, options);
+      return {
+        ...summaryResult({ pending: 0, failed: 0, conflicts: result.conflicts, lastSyncedAt: new Date().toISOString() }, "synced", "Synced", true),
+        pulledReports: result.pulledReports,
+        deletedReportIds: result.deletedReportIds,
+        pulledPhotos: []
+      };
+    } catch (error) {
+      console.warn(error);
+      return summaryResult(summary, "failed", error.message || "Cloud sync failed", false);
+    }
+  }
+
+  async function syncLibraryReports(library, options = {}) {
+    const localReports = (library?.reports || []).filter((report) => report && report.id);
+    const remoteRows = await fetchRemoteReports();
+    const remoteByLocalId = new Map(remoteRows.map((row) => [row.local_id, row]));
+    const localIds = new Set(localReports.map((report) => report.id));
+    const pulledReports = [];
+    const deletedReportIds = [];
+    let conflicts = 0;
+
+    for (const report of localReports) {
+      const remote = remoteByLocalId.get(report.id);
+      const localUpdated = timeValue(report.updatedAt || report.lastSavedAt || report.createdAt);
+      const remoteUpdated = remote ? remoteReportTime(remote) : 0;
+      const hasPendingLocal = report.syncStatus === "pending" || !remote;
+
+      if (remote?.deleted_at && !hasPendingLocal && remoteUpdated >= localUpdated) {
+        deletedReportIds.push(report.id);
+        continue;
+      }
+
+      if (remote && remoteUpdated > localUpdated && hasPendingLocal && remote.device_id && remote.device_id !== (report.deviceId || options.deviceId || "")) {
+        report.syncStatus = "conflict";
+        report.reportStatus = "Conflict";
+        conflicts += 1;
+        continue;
+      }
+
+      if (remote && remoteUpdated > localUpdated && !hasPendingLocal) {
+        pulledReports.push(normalizeRemoteReport(remote));
+        continue;
+      }
+
+      if (!remote && isBlankStarterReport(report)) {
+        continue;
+      }
+
+      if (!remote || localUpdated >= remoteUpdated || hasPendingLocal) {
+        const saved = await upsertReport({
+          localId: report.id,
+          deviceId: options.deviceId || report.deviceId || "",
+          updatedAt: report.updatedAt || report.lastSavedAt || new Date().toISOString(),
+          report: {
+            ...report,
+            deviceId: options.deviceId || report.deviceId || ""
+          }
+        });
+        report.remoteId = saved.remote_id || report.remoteId || "";
+        report.syncStatus = "synced";
+      }
+    }
+
+    for (const remote of remoteRows) {
+      if (localIds.has(remote.local_id)) continue;
+      if (remote.deleted_at) {
+        deletedReportIds.push(remote.local_id);
+        continue;
+      }
+      pulledReports.push(normalizeRemoteReport(remote));
+    }
+
+    return { pulledReports, deletedReportIds, conflicts };
+  }
+
   async function syncReports(db, queue) {
     const localRecords = await db.getReportRecords();
     const deletedRecords = db.getDeletedReportRecords ? await db.getDeletedReportRecords() : [];
@@ -362,6 +455,29 @@
     };
   }
 
+  function isBlankStarterReport(report) {
+    if (!report || report.remoteId || report.exportedAt || report.exportFolder || report.exportPdfPath) return false;
+
+    const ignoredInspectionKeys = new Set(["inspectionDate", "companyName"]);
+    const inspectionHasContent = Object.entries(report.inspection || {}).some(([key, value]) => {
+      if (ignoredInspectionKeys.has(key)) return false;
+      return String(value || "").trim().length > 0;
+    });
+    if (inspectionHasContent) return false;
+
+    const sections = report.sections || [];
+    return sections.every((section, index) => {
+      if (section.isArchived || section.isApplicable === false || section.deletedAt) return false;
+      if (Number.isFinite(Number(section.sortOrder)) && Number(section.sortOrder) !== index + 1) return false;
+      return (section.items || []).every((item) => {
+        const hasObservations = Array.isArray(item.observations) && item.observations.length > 0;
+        const hasStatus = String(item.status || "").trim().length > 0;
+        const changedCondition = item.condition && item.condition !== "satisfactory";
+        return !hasObservations && !hasStatus && !changedCondition;
+      });
+    });
+  }
+
   function timeValue(value) {
     const time = new Date(value || 0).getTime();
     return Number.isFinite(time) ? time : 0;
@@ -387,6 +503,7 @@
     readConfig,
     isConfigured,
     attemptSync,
+    syncLibrary,
     describeConflictStrategy
   };
 })();

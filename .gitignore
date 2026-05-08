@@ -13,10 +13,17 @@ out/
 .env
 .env.*
 !.env.example
+env-config*.js
 *.pem
 *.key
 *.p12
 *.pfx
+
+# Generated versioned PWA aliases for direct file/local preview
+app.v*.js
+offline-db.v*.js
+sync-service.v*.js
+styles.v*.css
 
 # Local databases, exports, and generated report data
 *.sqlite
