@@ -949,9 +949,7 @@ async function refreshSyncSummary(attemptSync = false) {
     const libraryWasOpen = libraryDrawer && !libraryDrawer.hidden;
     if (attemptSync && window.TrueViewSync) {
       if (!syncInFlight) {
-        syncInFlight = (offlineDbAvailable
-          ? window.TrueViewSync.attemptSync()
-          : window.TrueViewSync.syncLibrary(library, { deviceId: localDeviceId }))
+        syncInFlight = syncVisibleLibrary()
           .finally(() => {
             syncInFlight = null;
           });
@@ -972,6 +970,14 @@ async function refreshSyncSummary(attemptSync = false) {
     console.warn(error);
   }
   updateSyncIndicator();
+}
+
+async function syncVisibleLibrary() {
+  if (offlineDbAvailable && window.TrueViewOfflineDB) {
+    await window.TrueViewOfflineDB.saveLibrary(library, { queue: false });
+    return window.TrueViewSync.attemptSync();
+  }
+  return window.TrueViewSync.syncLibrary(library, { deviceId: localDeviceId });
 }
 
 function getBrowserOnlySyncSummary() {
@@ -2142,6 +2148,7 @@ document.addEventListener("click", async (event) => {
   if (action === "open-library") {
     closeOverlays();
     renderLibraryDrawer();
+    refreshSyncSummary(Boolean(window.TrueViewSync?.isConfigured() && navigator.onLine));
     return;
   }
 
