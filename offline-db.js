@@ -341,9 +341,12 @@
     );
   }
 
-  async function markReportSynced(reportId, remoteId) {
+  async function markReportSynced(reportId, remoteId, syncedUpdatedAt = "") {
     const record = await get("reports", reportId);
     if (record) {
+      const recordTime = timeValue(record.report?.updatedAt || record.updatedAt);
+      const syncedTime = timeValue(syncedUpdatedAt);
+      if (syncedTime && recordTime > syncedTime) return false;
       record.remoteId = remoteId || record.remoteId || "";
       record.syncStatus = "synced";
       record.updatedAt = record.report?.updatedAt || nowIso();
@@ -355,6 +358,7 @@
       await put("reports", record);
     }
     await clearQueueForEntity(reportId, "report");
+    return true;
   }
 
   async function markPhotoSynced(photoId, remoteId) {
@@ -444,6 +448,11 @@
       await put("deletedReports", record);
     }
     await clearQueueForEntity(reportId, "report");
+  }
+
+  function timeValue(value) {
+    const time = new Date(value || 0).getTime();
+    return Number.isFinite(time) ? time : 0;
   }
 
   async function deleteReport(reportId, report = null, options = {}) {

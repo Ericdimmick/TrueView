@@ -151,8 +151,10 @@ let sectionDrag = null;
 let suppressSectionClickUntil = 0;
 let localDeviceId = "";
 let offlineDbAvailable = false;
-let saveToDbTimer = null;
+let saveToDbTimers = new Map();
+let fallbackSyncTimer = null;
 let syncPollTimer = null;
+let syncInFlight = null;
 let syncSummary = { pending: 0, failed: 0, conflicts: 0, syncing: 0, lastSyncedAt: "" };
 let toastTimer = null;
 let saveStatusTimer = null;
@@ -842,7 +844,7 @@ function saveState(options = {}) {
   }
   upsertCurrentReport();
   persistLibrary();
-  scheduleOfflineReportSave(options);
+  scheduleOfflineReportSave(options, state, library.activeReportId);
   updateSaveStatus(options.manual ? "Saved now" : getLocalSaveLabel());
   refreshSyncSummary();
 }
@@ -859,30 +861,45 @@ function persistLibrary() {
   localStorage.setItem(STORE_KEY, JSON.stringify(state));
 }
 
-function scheduleOfflineReportSave(options = {}) {
-  clearTimeout(saveToDbTimer);
+function cloneData(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function scheduleOfflineReportSave(options = {}, report = state, activeReportId = library?.activeReportId) {
+  const reportSnapshot = cloneData(report);
+  const activeReportIdSnapshot = activeReportId;
   const delay = options.manual || options.mutationType?.startsWith("section-") ? 80 : 420;
   if (!offlineDbAvailable || !window.TrueViewOfflineDB) {
+    clearTimeout(fallbackSyncTimer);
     if (!options.skipQueue && navigator.onLine && window.TrueViewSync?.isConfigured()) {
-      saveToDbTimer = setTimeout(() => refreshSyncSummary(true), delay);
+      fallbackSyncTimer = setTimeout(() => refreshSyncSummary(true), delay);
     }
     return;
   }
-  saveToDbTimer = setTimeout(async () => {
+
+  const existingTimer = saveToDbTimers.get(reportSnapshot.id);
+  if (existingTimer) clearTimeout(existingTimer);
+
+  const timer = setTimeout(async () => {
+    saveToDbTimers.delete(reportSnapshot.id);
     try {
-      await window.TrueViewOfflineDB.saveReport(state, {
+      await window.TrueViewOfflineDB.saveReport(reportSnapshot, {
         mutationType: options.skipQueue ? "local-save" : options.mutationType || "report-upsert",
         queue: !options.skipQueue
       });
-      await window.TrueViewOfflineDB.saveLibrary(library, { queue: false });
+      await window.TrueViewOfflineDB.saveLibrary({ activeReportId: activeReportIdSnapshot, reports: [] }, { queue: false });
       await refreshSyncSummary(Boolean(window.TrueViewSync?.isConfigured() && navigator.onLine && !options.skipQueue));
       updateSaveStatus(getLocalSaveLabel());
     } catch (error) {
       console.warn(error);
-      state.syncStatus = "failed";
+      const failedReport = library?.reports?.find((entry) => entry.id === reportSnapshot.id);
+      if (failedReport) failedReport.syncStatus = "failed";
+      if (state?.id === reportSnapshot.id) state.syncStatus = "failed";
+      persistLibrary();
       updateSaveStatus("Sync failed - saved in fallback storage");
     }
   }, delay);
+  saveToDbTimers.set(reportSnapshot.id, timer);
 }
 
 function getLocalSaveLabel() {
@@ -931,19 +948,23 @@ async function refreshSyncSummary(attemptSync = false) {
     }
     const libraryWasOpen = libraryDrawer && !libraryDrawer.hidden;
     if (attemptSync && window.TrueViewSync) {
-      const result = offlineDbAvailable
-        ? await window.TrueViewSync.attemptSync()
-        : await window.TrueViewSync.syncLibrary(library, { deviceId: localDeviceId });
+      if (!syncInFlight) {
+        syncInFlight = (offlineDbAvailable
+          ? window.TrueViewSync.attemptSync()
+          : window.TrueViewSync.syncLibrary(library, { deviceId: localDeviceId }))
+          .finally(() => {
+            syncInFlight = null;
+          });
+      }
+      const result = await syncInFlight;
       syncSummary = { ...syncSummary, ...result };
       const deletedReportsChanged = removeSyncedDeletedReports(result.deletedReportIds || []);
       const changedReports = mergeSyncedReports(result.pulledReports || []);
       await cacheSyncedPhotos(result.pulledPhotos || []);
       const markedSynced = markInMemoryReportsSynced(result);
-      if ((changedReports || deletedReportsChanged) && state) {
+      if ((changedReports || deletedReportsChanged || markedSynced) && state) {
         persistLibrary();
         render();
-      } else if (markedSynced) {
-        persistLibrary();
         if (libraryWasOpen) renderLibraryDrawer();
       }
     }
@@ -992,13 +1013,14 @@ function removeSyncedDeletedReports(reportIds) {
 function markInMemoryReportsSynced(result) {
   if (!result || !library) return false;
   const syncedIds = new Set(result.syncedReportIds || []);
+  const syncedUpdatedAts = result.syncedReportUpdatedAts || {};
   const failedIds = new Set(result.failedReportIds || []);
   const conflictIds = new Set(result.conflictReportIds || []);
   if (!syncedIds.size && !failedIds.size && !conflictIds.size) return false;
 
   let changed = false;
   library.reports.forEach((report) => {
-    if (syncedIds.has(report.id) && report.syncStatus !== "synced") {
+    if (syncedIds.has(report.id) && reportIsCoveredBySync(report, syncedUpdatedAts[report.id]) && report.syncStatus !== "synced") {
       report.syncStatus = "synced";
       changed = true;
     } else if (failedIds.has(report.id) && report.syncStatus !== "failed") {
@@ -1010,7 +1032,7 @@ function markInMemoryReportsSynced(result) {
       changed = true;
     }
   });
-  if (state && syncedIds.has(state.id) && state.syncStatus !== "synced") {
+  if (state && syncedIds.has(state.id) && reportIsCoveredBySync(state, syncedUpdatedAts[state.id]) && state.syncStatus !== "synced") {
     state.syncStatus = "synced";
     changed = true;
   } else if (state && failedIds.has(state.id) && state.syncStatus !== "failed") {
@@ -1022,6 +1044,13 @@ function markInMemoryReportsSynced(result) {
     changed = true;
   }
   return changed;
+}
+
+function reportIsCoveredBySync(report, syncedUpdatedAt) {
+  if (!syncedUpdatedAt) return true;
+  const reportTime = new Date(report.updatedAt || report.lastSavedAt || report.createdAt || 0).getTime();
+  const syncedTime = new Date(syncedUpdatedAt || 0).getTime();
+  return Number.isFinite(reportTime) && Number.isFinite(syncedTime) && reportTime <= syncedTime;
 }
 
 function mergeSyncedReports(reports) {
@@ -1039,8 +1068,7 @@ function mergeSyncedReports(reports) {
     const existing = library.reports[index];
     const existingTime = new Date(existing.updatedAt || existing.lastSavedAt || existing.createdAt || 0).getTime();
     const incomingTime = new Date(migrated.updatedAt || migrated.lastSavedAt || migrated.createdAt || 0).getTime();
-    const localHasPendingWork = existing.syncStatus === "pending" || existing.syncStatus === "conflict";
-    if (!localHasPendingWork && incomingTime >= existingTime) {
+    if (incomingTime >= existingTime) {
       library.reports[index] = migrated;
       if (state && state.id === migrated.id) state = migrated;
       changed = true;

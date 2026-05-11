@@ -51,7 +51,7 @@ node server.js
 Default local URL:
 
 ```text
-http://localhost:5173/index.html?v=20
+http://localhost:5173/index.html?v=21
 ```
 
 If port `5173` is already busy:
@@ -110,7 +110,7 @@ navigator.serviceWorker.register("./sw.js")
 ```
 
 Offline app shell:
-`sw.js` caches the core app files, manifest, icons, logo, and offline fallback. It also ignores query-string versioning when matching cached assets, which helps `styles.v20.css` and `app.v20.js` resolve against the cached app shell. The production service worker is served with `Service-Worker-Allowed: /` and `Cache-Control: no-cache, no-store, must-revalidate`.
+`sw.js` caches the core app files, manifest, icons, logo, and offline fallback. It also ignores query-string versioning when matching cached assets, which helps `styles.v21.css` and `app.v21.js` resolve against the cached app shell. The production service worker is served with `Service-Worker-Allowed: /` and `Cache-Control: no-cache, no-store, must-revalidate`.
 
 iOS Safari Home Screen support:
 `index.html` includes:
@@ -178,10 +178,13 @@ After adding or changing those variables, redeploy the Vercel project so `script
 Supabase sync behavior:
 
 - IndexedDB/localStorage remain the first save location.
+- Each report is compared by its stable report id and local update timestamp.
+- A report is marked synced only when the current local edit timestamp is covered by a confirmed Supabase write or a newer Supabase pull.
+- If a newer edit happens while an older sync is in flight, the report stays pending and syncs again.
 - Supabase sync only runs when online and configured.
 - Reports, dynamic sections, section order, observations, recommendations, statuses, and photo data URLs are synced.
-- If remote data is newer and the local report has no pending local edits, TrueView pulls the remote report.
-- If local and remote both changed, TrueView marks a conflict and does not overwrite silently.
+- If remote data is newer, TrueView pulls the remote report.
+- If local data is newer, TrueView pushes the local report.
 
 ## Verified Commands
 
@@ -259,7 +262,7 @@ For local same-Wi-Fi testing:
 3. On the iPhone, open Safari to:
 
    ```text
-   http://YOUR_MAC_LAN_IP:5173/index.html?v=20
+   http://YOUR_MAC_LAN_IP:5173/index.html?v=21
    ```
 
 4. Wait for the app to load fully once.
@@ -296,7 +299,7 @@ Local offline test:
 2. Open:
 
    ```text
-   http://localhost:5173/index.html?v=20
+   http://localhost:5173/index.html?v=21
    ```
 
 3. Create or edit a report.
@@ -406,8 +409,8 @@ Validated:
 - `index.html` served with HTTP 200
 - `manifest.webmanifest` served with HTTP 200 and valid JSON
 - `sw.js` served with HTTP 200
-- app shell references `styles.v20.css`
-- app shell references `app.v20.js`
+- app shell references `styles.v21.css`
+- app shell references `app.v21.js`
 - app shell references `apple-touch-icon.png`
 
 Completed Vercel production deployment:
@@ -422,6 +425,6 @@ Validated in production:
 - `manifest.webmanifest` returned HTTP 200 and valid JSON
 - `sw.js` returned HTTP 200
 - `sw.js` included `Service-Worker-Allowed: /`
-- production app shell references `styles.v20.css`
-- production app shell references `app.v20.js`
+- production app shell references `styles.v21.css`
+- production app shell references `app.v21.js`
 - production app shell references `apple-touch-icon.png`

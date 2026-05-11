@@ -78,6 +78,7 @@
         deletedReportIds: reportResult.deletedReportIds,
         pulledPhotos: photoResult.pulledPhotos,
         syncedReportIds: reportResult.syncedReportIds,
+        syncedReportUpdatedAts: reportResult.syncedReportUpdatedAts,
         pushedReportIds: reportResult.pushedReportIds,
         failedReportIds: reportResult.failedReportIds,
         conflictReportIds: reportResult.conflictReportIds,
@@ -117,6 +118,7 @@
         deletedReportIds: result.deletedReportIds,
         pulledPhotos: [],
         syncedReportIds: result.syncedReportIds,
+        syncedReportUpdatedAts: result.syncedReportUpdatedAts,
         pushedReportIds: result.pushedReportIds,
         failedReportIds: result.failedReportIds,
         conflictReportIds: result.conflictReportIds
@@ -135,6 +137,7 @@
     const pulledReports = [];
     const deletedReportIds = [];
     const syncedReportIds = [];
+    const syncedReportUpdatedAts = {};
     const pushedReportIds = [];
     const failedReportIds = [];
     const conflictReportIds = [];
@@ -143,6 +146,7 @@
     for (const report of localReports) {
       const remote = remoteByLocalId.get(report.id);
       const localUpdated = timeValue(report.updatedAt || report.lastSavedAt || report.createdAt);
+      const localUpdatedAt = report.updatedAt || report.lastSavedAt || report.createdAt || new Date().toISOString();
       const remoteUpdated = remote ? remoteReportTime(remote) : 0;
       const hasPendingLocal = ["pending", "failed"].includes(report.syncStatus) || !remote;
       const deviceId = options.deviceId || report.deviceId || "";
@@ -166,15 +170,19 @@
           const saved = await upsertReport({
             localId: report.id,
             deviceId,
-            updatedAt: report.updatedAt || report.lastSavedAt || new Date().toISOString(),
+            updatedAt: localUpdatedAt,
             report: {
               ...report,
               deviceId
             }
           });
-          report.remoteId = saved.remote_id || report.remoteId || "";
-          report.syncStatus = "synced";
-          syncedReportIds.push(report.id);
+          const syncedAt = saved.local_updated_at || localUpdatedAt;
+          if (timeValue(report.updatedAt || report.lastSavedAt || report.createdAt) <= timeValue(syncedAt)) {
+            report.remoteId = saved.remote_id || report.remoteId || "";
+            report.syncStatus = "synced";
+            syncedReportIds.push(report.id);
+            syncedReportUpdatedAts[report.id] = syncedAt;
+          }
           pushedReportIds.push(report.id);
         } catch (error) {
           console.warn(error);
@@ -182,9 +190,13 @@
           failedReportIds.push(report.id);
         }
       } else if (remote) {
-        report.remoteId = remote.remote_id || report.remoteId || "";
-        report.syncStatus = "synced";
-        syncedReportIds.push(report.id);
+        const syncedAt = remote.local_updated_at || remote.report?.updatedAt || remote.updated_at || "";
+        if (timeValue(report.updatedAt || report.lastSavedAt || report.createdAt) <= timeValue(syncedAt)) {
+          report.remoteId = remote.remote_id || report.remoteId || "";
+          report.syncStatus = "synced";
+          syncedReportIds.push(report.id);
+          syncedReportUpdatedAts[report.id] = syncedAt;
+        }
       }
     }
 
@@ -197,7 +209,7 @@
       pulledReports.push(normalizeRemoteReport(remote));
     }
 
-    return { pulledReports, deletedReportIds, syncedReportIds, pushedReportIds, failedReportIds, conflictReportIds, conflicts };
+    return { pulledReports, deletedReportIds, syncedReportIds, syncedReportUpdatedAts, pushedReportIds, failedReportIds, conflictReportIds, conflicts };
   }
 
   async function syncReports(db, queue) {
@@ -211,6 +223,7 @@
     const pulledReports = [];
     const deletedReportIds = [];
     const syncedReportIds = [];
+    const syncedReportUpdatedAts = {};
     const pushedReportIds = [];
     const failedReportIds = [];
     const conflictReportIds = [];
@@ -257,16 +270,24 @@
       if (!remote || hasPendingLocal || localUpdated >= remoteUpdated) {
         try {
           const saved = await upsertReport(localRecord);
-          await db.markReportSynced(localId, saved.remote_id || remote?.remote_id || "");
-          syncedReportIds.push(localId);
+          const syncedAt = saved.local_updated_at || localReport.updatedAt || localRecord.updatedAt || "";
+          const marked = await db.markReportSynced(localId, saved.remote_id || remote?.remote_id || "", syncedAt);
+          if (marked) {
+            syncedReportIds.push(localId);
+            syncedReportUpdatedAts[localId] = syncedAt;
+          }
           pushedReportIds.push(localId);
         } catch (error) {
           await db.markEntityFailed(localId, "report", error.message);
           failedReportIds.push(localId);
         }
       } else if (remote) {
-        await db.markReportSynced(localId, remote.remote_id || "");
-        syncedReportIds.push(localId);
+        const syncedAt = remote.local_updated_at || remote.report?.updatedAt || remote.updated_at || "";
+        const marked = await db.markReportSynced(localId, remote.remote_id || "", syncedAt);
+        if (marked) {
+          syncedReportIds.push(localId);
+          syncedReportUpdatedAts[localId] = syncedAt;
+        }
       }
     }
 
@@ -283,7 +304,7 @@
       pulledReports.push(pulled);
     }
 
-    return { pulledReports, deletedReportIds, syncedReportIds, pushedReportIds, failedReportIds, conflictReportIds, conflicts };
+    return { pulledReports, deletedReportIds, syncedReportIds, syncedReportUpdatedAts, pushedReportIds, failedReportIds, conflictReportIds, conflicts };
   }
 
   async function syncPhotos(db, queue) {
@@ -545,7 +566,7 @@
   }
 
   function describeConflictStrategy() {
-    return "Local data saves first. During sync, newer remote data is pulled only when there is no pending local edit. If both local and remote changed, TrueView marks a conflict and does not overwrite silently.";
+    return "Local data saves first. During sync, each report is compared by its local update timestamp. Newer local reports push to Supabase; newer Supabase reports pull back to the device.";
   }
 
   window.TrueViewSync = {

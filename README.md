@@ -13,7 +13,7 @@ npm start
 Then open:
 
 ```text
-http://localhost:5173/index.html?v=20
+http://localhost:5173/index.html?v=21
 ```
 
 If port 5173 is busy:
@@ -116,11 +116,13 @@ Use either the publishable key or the older anon key. Do not use a Supabase serv
 
 `NEXT_PUBLIC_TRUEVIEW_SYNC_SPACE_ID` should be a long random value used by the RLS policies to isolate your TrueView data. After adding/changing Vercel variables, trigger a new production deployment so `env-config.js` is regenerated.
 
-Conflict behavior:
+Sync behavior:
 
-- Local edits are never silently overwritten.
-- If remote data is newer and the local report has no pending local edits, TrueView pulls the remote report.
-- If both local and remote changed, the sync queue marks a conflict and keeps the local report safe for review.
+- Local saves happen first, then TrueView syncs when online.
+- Each report is compared by stable report id and local update timestamp.
+- If local data is newer, TrueView pushes that report to Supabase.
+- If remote data is newer, TrueView pulls that report back down.
+- A report is marked synced only after the current local edit timestamp is covered by a confirmed Supabase write or pull.
 
 Known limitations:
 

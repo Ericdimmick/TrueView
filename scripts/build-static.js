@@ -4,10 +4,10 @@ const path = require("path");
 const ROOT = path.resolve(__dirname, "..");
 const OUT_DIR = path.join(ROOT, "public");
 const VERSIONED_ASSETS = {
-  "styles.css": "styles.v20.css",
-  "app.js": "app.v20.js",
-  "offline-db.js": "offline-db.v20.js",
-  "sync-service.js": "sync-service.v20.js"
+  "styles.css": "styles.v21.css",
+  "app.js": "app.v21.js",
+  "offline-db.js": "offline-db.v21.js",
+  "sync-service.js": "sync-service.v21.js"
 };
 
 const STATIC_FILES = [
@@ -49,7 +49,7 @@ async function build() {
     })
   );
   await fs.writeFile(path.join(OUT_DIR, "env-config.js"), buildEnvConfig(), "utf8");
-  await fs.writeFile(path.join(OUT_DIR, "env-config.v20.js"), buildEnvConfig(), "utf8");
+  await fs.writeFile(path.join(OUT_DIR, "env-config.v21.js"), buildEnvConfig(), "utf8");
   await writeLocalPreviewAliases();
 
   console.log(`Static PWA build written to ${path.relative(ROOT, OUT_DIR)}`);
@@ -77,7 +77,7 @@ async function writeLocalPreviewAliases() {
     })
   );
   await fs.writeFile(path.join(ROOT, "env-config.js"), buildEnvConfig(), "utf8");
-  await fs.writeFile(path.join(ROOT, "env-config.v20.js"), buildEnvConfig(), "utf8");
+  await fs.writeFile(path.join(ROOT, "env-config.v21.js"), buildEnvConfig(), "utf8");
 }
 
 function buildEnvConfig() {
