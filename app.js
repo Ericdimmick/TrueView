@@ -939,7 +939,7 @@ function setupSyncRefreshTriggers() {
   });
 }
 
-async function refreshSyncSummary(attemptSync = false) {
+async function refreshSyncSummary(attemptSync = false, syncOptions = {}) {
   try {
     if (offlineDbAvailable && window.TrueViewOfflineDB) {
       syncSummary = await window.TrueViewOfflineDB.getSyncSummary();
@@ -948,8 +948,11 @@ async function refreshSyncSummary(attemptSync = false) {
     }
     const libraryWasOpen = libraryDrawer && !libraryDrawer.hidden;
     if (attemptSync && window.TrueViewSync) {
+      if (syncOptions.pull && syncInFlight) {
+        await syncInFlight.catch((error) => console.warn(error));
+      }
       if (!syncInFlight) {
-        syncInFlight = syncVisibleLibrary()
+        syncInFlight = syncVisibleLibrary(syncOptions)
           .finally(() => {
             syncInFlight = null;
           });
@@ -972,12 +975,12 @@ async function refreshSyncSummary(attemptSync = false) {
   updateSyncIndicator();
 }
 
-async function syncVisibleLibrary() {
+async function syncVisibleLibrary(syncOptions = {}) {
   if (offlineDbAvailable && window.TrueViewOfflineDB) {
     await window.TrueViewOfflineDB.saveLibrary(library, { queue: false });
-    return window.TrueViewSync.attemptSync();
+    return window.TrueViewSync.attemptSync(syncOptions);
   }
-  return window.TrueViewSync.syncLibrary(library, { deviceId: localDeviceId });
+  return window.TrueViewSync.syncLibrary(library, { deviceId: localDeviceId, ...syncOptions });
 }
 
 function getBrowserOnlySyncSummary() {
@@ -1788,6 +1791,7 @@ function renderLibraryDrawer() {
     <div class="library-toolbar">
       <button class="primary-button" type="button" data-action="new-report">New Report</button>
       <button class="ghost-button" type="button" data-action="save-progress">Save Current</button>
+      <button class="ghost-button" type="button" data-action="refresh-cloud-library">Refresh Cloud</button>
       <button class="ghost-button" type="button" data-action="export-current-report">Save PDF + Photos</button>
     </div>
     <div class="library-list">
@@ -2157,6 +2161,13 @@ document.addEventListener("click", async (event) => {
     render();
     if (fromMobileMenu) closeOverlays();
     showToast("Progress saved.");
+    return;
+  }
+
+  if (action === "refresh-cloud-library") {
+    await refreshSyncSummary(Boolean(window.TrueViewSync?.isConfigured() && navigator.onLine), { pull: true });
+    renderLibraryDrawer();
+    showToast(navigator.onLine ? "Cloud library refreshed." : "Offline - cloud refresh will wait.");
     return;
   }
 

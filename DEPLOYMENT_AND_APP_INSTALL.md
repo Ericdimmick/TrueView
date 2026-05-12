@@ -110,7 +110,7 @@ navigator.serviceWorker.register("./sw.js")
 ```
 
 Offline app shell:
-`sw.js` caches the core app files, manifest, icons, logo, and offline fallback. It also ignores query-string versioning when matching cached assets, which helps `styles.v22.css` and `app.v22.js` resolve against the cached app shell. The production service worker is served with `Service-Worker-Allowed: /` and `Cache-Control: no-cache, no-store, must-revalidate`.
+`sw.js` caches the core app files, manifest, icons, logo, and offline fallback. It also ignores query-string versioning when matching cached assets, which helps `styles.v23.css` and `app.v23.js` resolve against the cached app shell. The production service worker is served with `Service-Worker-Allowed: /` and `Cache-Control: no-cache, no-store, must-revalidate`.
 
 iOS Safari Home Screen support:
 `index.html` includes:
@@ -179,11 +179,12 @@ Supabase sync behavior:
 
 - IndexedDB/localStorage remain the first save location.
 - Each report is compared by its stable report id and local update timestamp.
-- A report is marked synced only when the current local edit timestamp is covered by a confirmed Supabase write or a newer Supabase pull.
+- A report is marked synced only when the current local edit timestamp is covered by a confirmed Supabase write or a deliberate **Refresh Cloud** pull.
 - If a newer edit happens while an older sync is in flight, the report stays pending and syncs again.
-- Supabase sync only runs when online and configured.
+- Background Supabase sync only uploads local work when online and configured.
+- The Report Library **Refresh Cloud** button intentionally pulls reports created or edited on another device.
 - Reports, dynamic sections, section order, observations, recommendations, statuses, and photo data URLs are synced.
-- If remote data is newer, TrueView pulls the remote report.
+- If remote data is newer, TrueView pulls the remote report during **Refresh Cloud**.
 - If local data is newer, TrueView pushes the local report.
 
 ## Verified Commands
@@ -409,8 +410,8 @@ Validated:
 - `index.html` served with HTTP 200
 - `manifest.webmanifest` served with HTTP 200 and valid JSON
 - `sw.js` served with HTTP 200
-- app shell references `styles.v22.css`
-- app shell references `app.v22.js`
+- app shell references `styles.v23.css`
+- app shell references `app.v23.js`
 - app shell references `apple-touch-icon.png`
 
 Completed Vercel production deployment:
@@ -425,6 +426,6 @@ Validated in production:
 - `manifest.webmanifest` returned HTTP 200 and valid JSON
 - `sw.js` returned HTTP 200
 - `sw.js` included `Service-Worker-Allowed: /`
-- production app shell references `styles.v22.css`
-- production app shell references `app.v22.js`
+- production app shell references `styles.v23.css`
+- production app shell references `app.v23.js`
 - production app shell references `apple-touch-icon.png`

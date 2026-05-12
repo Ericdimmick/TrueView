@@ -95,7 +95,7 @@ Sync status:
 
 ## Supabase Cloud Sync
 
-Supabase sync is implemented as a local-first layer. IndexedDB/localStorage still save first, then `sync-service.js` pushes queued reports/photos to Supabase and pulls remote reports/photos back down when online.
+Supabase sync is implemented as a local-first layer. IndexedDB/localStorage still save first, then `sync-service.js` uploads the newest local reports/photos to Supabase when online. Cloud downloads are deliberate: use **Refresh Cloud** in the Report Library to pull reports created or edited on another device.
 
 Run the SQL in:
 
@@ -121,8 +121,9 @@ Sync behavior:
 - Local saves happen first, then TrueView syncs when online.
 - Each report is compared by stable report id and local update timestamp.
 - If local data is newer, TrueView pushes that report to Supabase.
-- If remote data is newer, TrueView pulls that report back down.
-- A report is marked synced only after the current local edit timestamp is covered by a confirmed Supabase write or pull.
+- If remote data is newer, TrueView pulls that report back down when you tap **Refresh Cloud** in the Report Library.
+- Background sync uploads local work and remote deletions, but it does not silently reshuffle the report library with cloud downloads.
+- A report is marked synced only after the current local edit timestamp is covered by a confirmed Supabase write or an intentional cloud refresh.
 
 Known limitations:
 

@@ -46,7 +46,7 @@
     return `${config.supabaseUrl}/rest/v1/${table}${query}`;
   }
 
-  async function attemptSync() {
+  async function attemptSync(options = {}) {
     const db = window.TrueViewOfflineDB;
     if (!db) {
       return { ok: false, status: "local-db-unavailable", message: "Local database unavailable." };
@@ -63,8 +63,8 @@
 
     try {
       const [reportResult, photoResult] = await Promise.all([
-        syncReports(db, summary.queue || []),
-        syncPhotos(db, summary.queue || [])
+        syncReports(db, summary.queue || [], options),
+        syncPhotos(db, summary.queue || [], options)
       ]);
       await db.setSyncMeta({ lastSyncedAt: new Date().toISOString() });
       const nextSummary = await db.getSyncSummary();
@@ -134,6 +134,7 @@
     const remoteRows = await fetchRemoteReports();
     const remoteByLocalId = new Map(remoteRows.map((row) => [row.local_id, row]));
     const localIds = new Set(localReports.map((report) => report.id));
+    const pullRemote = options.pull === true;
     const pulledReports = [];
     const deletedReportIds = [];
     const syncedReportIds = [];
@@ -157,7 +158,7 @@
       }
 
       if (remote && remoteUpdated > localUpdated) {
-        pulledReports.push(normalizeRemoteReport(remote));
+        if (pullRemote) pulledReports.push(normalizeRemoteReport(remote));
         continue;
       }
 
@@ -200,19 +201,21 @@
       }
     }
 
-    for (const remote of remoteRows) {
-      if (localIds.has(remote.local_id)) continue;
-      if (remote.deleted_at) {
-        deletedReportIds.push(remote.local_id);
-        continue;
+    if (pullRemote) {
+      for (const remote of remoteRows) {
+        if (localIds.has(remote.local_id)) continue;
+        if (remote.deleted_at) {
+          deletedReportIds.push(remote.local_id);
+          continue;
+        }
+        pulledReports.push(normalizeRemoteReport(remote));
       }
-      pulledReports.push(normalizeRemoteReport(remote));
     }
 
     return { pulledReports, deletedReportIds, syncedReportIds, syncedReportUpdatedAts, pushedReportIds, failedReportIds, conflictReportIds, conflicts };
   }
 
-  async function syncReports(db, queue) {
+  async function syncReports(db, queue, options = {}) {
     const localRecords = await db.getReportRecords();
     const deletedRecords = db.getDeletedReportRecords ? await db.getDeletedReportRecords() : [];
     const remoteRows = await fetchRemoteReports();
@@ -227,6 +230,7 @@
     const pushedReportIds = [];
     const failedReportIds = [];
     const conflictReportIds = [];
+    const pullRemote = options.pull === true;
     let conflicts = 0;
 
     for (const deletedRecord of deletedRecords) {
@@ -257,9 +261,11 @@
       }
 
       if (remote && remoteUpdated > localUpdated) {
-        const pulled = normalizeRemoteReport(remote);
-        await db.saveRemoteReport(pulled, remote.remote_id);
-        pulledReports.push(pulled);
+        if (pullRemote) {
+          const pulled = normalizeRemoteReport(remote);
+          await db.saveRemoteReport(pulled, remote.remote_id);
+          pulledReports.push(pulled);
+        }
         continue;
       }
 
@@ -291,28 +297,31 @@
       }
     }
 
-    for (const remote of remoteRows) {
-      if (localRecords.some((record) => (record.localId || record.report?.id) === remote.local_id)) continue;
-      if (deletedIds.has(remote.local_id)) continue;
-      if (remote.deleted_at) {
-        await db.saveRemoteDeletedReport(normalizeRemoteDeletedReport(remote));
-        deletedReportIds.push(remote.local_id);
-        continue;
+    if (pullRemote) {
+      for (const remote of remoteRows) {
+        if (localRecords.some((record) => (record.localId || record.report?.id) === remote.local_id)) continue;
+        if (deletedIds.has(remote.local_id)) continue;
+        if (remote.deleted_at) {
+          await db.saveRemoteDeletedReport(normalizeRemoteDeletedReport(remote));
+          deletedReportIds.push(remote.local_id);
+          continue;
+        }
+        const pulled = normalizeRemoteReport(remote);
+        await db.saveRemoteReport(pulled, remote.remote_id);
+        pulledReports.push(pulled);
       }
-      const pulled = normalizeRemoteReport(remote);
-      await db.saveRemoteReport(pulled, remote.remote_id);
-      pulledReports.push(pulled);
     }
 
     return { pulledReports, deletedReportIds, syncedReportIds, syncedReportUpdatedAts, pushedReportIds, failedReportIds, conflictReportIds, conflicts };
   }
 
-  async function syncPhotos(db, queue) {
+  async function syncPhotos(db, queue, options = {}) {
     const localPhotos = await db.getPhotoRecords();
     const remoteRows = await fetchRemotePhotos();
     const remoteByLocalId = new Map(remoteRows.map((row) => [row.local_id, row]));
     const queuedPhotoIds = new Set(queue.filter((entry) => entry.entity === "photo" && ["pending", "failed"].includes(entry.status)).map((entry) => entry.entityLocalId));
     const pulledPhotos = [];
+    const pullRemote = options.pull === true;
     let conflicts = 0;
 
     for (const localPhoto of localPhotos) {
@@ -328,7 +337,7 @@
         continue;
       }
 
-      if (remote && remoteUpdated > localUpdated && !hasPendingLocal) {
+      if (remote && remoteUpdated > localUpdated && pullRemote && !hasPendingLocal) {
         const pulled = normalizeRemotePhoto(remote);
         await db.saveRemotePhoto(pulled, remote.remote_id);
         pulledPhotos.push(pulled);
@@ -345,11 +354,13 @@
       }
     }
 
-    for (const remote of remoteRows) {
-      if (localPhotos.some((photo) => photo.localId === remote.local_id)) continue;
-      const pulled = normalizeRemotePhoto(remote);
-      await db.saveRemotePhoto(pulled, remote.remote_id);
-      pulledPhotos.push(pulled);
+    if (pullRemote) {
+      for (const remote of remoteRows) {
+        if (localPhotos.some((photo) => photo.localId === remote.local_id)) continue;
+        const pulled = normalizeRemotePhoto(remote);
+        await db.saveRemotePhoto(pulled, remote.remote_id);
+        pulledPhotos.push(pulled);
+      }
     }
 
     return { pulledPhotos, conflicts };
@@ -566,7 +577,7 @@
   }
 
   function describeConflictStrategy() {
-    return "Local data saves first. During sync, each report is compared by its local update timestamp. Newer local reports push to Supabase; newer Supabase reports pull back to the device.";
+    return "Local data saves first. Background sync uploads newer local reports to Supabase. Reports created or edited on another device are pulled only when the Report Library refreshes from cloud, using latest update timestamp wins.";
   }
 
   window.TrueViewSync = {
