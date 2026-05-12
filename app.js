@@ -961,9 +961,12 @@ async function refreshSyncSummary(attemptSync = false, syncOptions = {}) {
       syncSummary = { ...syncSummary, ...result };
       const deletedReportsChanged = removeSyncedDeletedReports(result.deletedReportIds || []);
       const changedReports = mergeSyncedReports(result.pulledReports || []);
+      const prunedReports = syncOptions.pull && result.ok
+        ? pruneLibraryToCloudSnapshot(result.cloudReportIds || [])
+        : false;
       await cacheSyncedPhotos(result.pulledPhotos || []);
       const markedSynced = markInMemoryReportsSynced(result);
-      if ((changedReports || deletedReportsChanged || markedSynced) && state) {
+      if ((changedReports || deletedReportsChanged || prunedReports || markedSynced) && state) {
         persistLibrary();
         render();
         if (libraryWasOpen) renderLibraryDrawer();
@@ -1084,6 +1087,35 @@ function mergeSyncedReports(reports) {
     }
   });
   return adoptPulledReportsOverBlankStarter(reports) || changed;
+}
+
+function pruneLibraryToCloudSnapshot(cloudReportIds) {
+  if (!Array.isArray(cloudReportIds) || !library) return false;
+  const cloudIds = new Set(cloudReportIds.filter(Boolean));
+  const before = library.reports.length;
+  library.reports = library.reports.filter((report) => {
+    if (cloudIds.has(report.id)) return true;
+    return isLocalUnsyncedReport(report);
+  });
+  if (!library.reports.length) {
+    const replacement = createDefaultState();
+    library.reports.push(replacement);
+    library.activeReportId = replacement.id;
+    state = replacement;
+    return true;
+  }
+  if (!library.reports.some((report) => report.id === library.activeReportId)) {
+    library.activeReportId = getSortedReports()[0].id;
+  }
+  if (!state || !library.reports.some((report) => report.id === state.id)) {
+    state = getActiveReport();
+  }
+  return library.reports.length !== before;
+}
+
+function isLocalUnsyncedReport(report) {
+  if (!report || isBlankStarterReport(report)) return false;
+  return ["pending", "failed", "conflict"].includes(report.syncStatus);
 }
 
 function adoptPulledReportsOverBlankStarter(reports) {

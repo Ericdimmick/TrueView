@@ -8,10 +8,10 @@ const ROOT = __dirname;
 const EXPORT_ROOT = process.env.TRUEVIEW_EXPORT_ROOT || process.env.INSPECTFLOW_EXPORT_ROOT || path.join(os.homedir(), "Desktop", "TrueView Reports");
 const MAX_BODY_BYTES = 160 * 1024 * 1024;
 const VERSIONED_ASSETS = {
-  "styles.v24.css": "styles.css",
-  "app.v24.js": "app.js",
-  "offline-db.v24.js": "offline-db.js",
-  "sync-service.v24.js": "sync-service.js"
+  "styles.v25.css": "styles.css",
+  "app.v25.js": "app.js",
+  "offline-db.v25.js": "offline-db.js",
+  "sync-service.v25.js": "sync-service.js"
 };
 
 const MIME_TYPES = {

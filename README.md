@@ -123,6 +123,7 @@ Sync behavior:
 - If local data is newer, TrueView pushes that report to Supabase.
 - If remote data is newer, TrueView pulls that report back down when you tap **Refresh Cloud** in the Report Library.
 - Background sync and **Upload Changes** upload local work and remote deletions, but they do not silently reshuffle the report library with cloud downloads.
+- **Refresh Cloud** reconciles the library to the current cloud snapshot while preserving any unsynced local drafts.
 - Report uploads use the same visible Report Library that the inspector sees, so the cloud uploader no longer depends on a separate report queue view.
 - A report is marked synced only after the current local edit timestamp is covered by a confirmed Supabase write or an intentional cloud refresh.
 

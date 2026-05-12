@@ -122,6 +122,7 @@
         ...summaryResult({ ...nextSummary, failed: failedCount, conflicts: conflictCount }, status, message, !failedCount && !conflictCount),
         pulledReports: result.pulledReports,
         deletedReportIds: [...result.deletedReportIds, ...deletedResult.deletedReportIds],
+        cloudReportIds: result.cloudReportIds,
         pulledPhotos: photoResult.pulledPhotos,
         syncedReportIds: result.syncedReportIds,
         syncedReportUpdatedAts: result.syncedReportUpdatedAts,
@@ -141,6 +142,7 @@
     const remoteByLocalId = new Map(remoteRows.map((row) => [row.local_id, row]));
     const localIds = new Set(localReports.map((report) => report.id));
     const pullRemote = options.pull === true;
+    const cloudReportIds = new Set(remoteRows.filter((row) => !row.deleted_at).map((row) => row.local_id));
     const pulledReports = [];
     const deletedReportIds = [];
     const syncedReportIds = [];
@@ -205,6 +207,7 @@
             }
           }
           pushedReportIds.push(report.id);
+          cloudReportIds.add(report.id);
         } catch (error) {
           console.warn(error);
           report.syncStatus = "failed";
@@ -242,7 +245,7 @@
       }
     }
 
-    return { pulledReports, deletedReportIds, syncedReportIds, syncedReportUpdatedAts, pushedReportIds, failedReportIds, conflictReportIds, conflicts };
+    return { pulledReports, deletedReportIds, cloudReportIds: [...cloudReportIds], syncedReportIds, syncedReportUpdatedAts, pushedReportIds, failedReportIds, conflictReportIds, conflicts };
   }
 
   async function syncDeletedReportsFromDb(db) {
