@@ -976,11 +976,11 @@ async function refreshSyncSummary(attemptSync = false, syncOptions = {}) {
 }
 
 async function syncVisibleLibrary(syncOptions = {}) {
+  const options = { deviceId: localDeviceId, ...syncOptions };
   if (offlineDbAvailable && window.TrueViewOfflineDB) {
     await window.TrueViewOfflineDB.saveLibrary(library, { queue: false });
-    return window.TrueViewSync.attemptSync(syncOptions);
   }
-  return window.TrueViewSync.syncLibrary(library, { deviceId: localDeviceId, ...syncOptions });
+  return window.TrueViewSync.syncLibrary(library, options);
 }
 
 function getBrowserOnlySyncSummary() {
@@ -1791,6 +1791,7 @@ function renderLibraryDrawer() {
     <div class="library-toolbar">
       <button class="primary-button" type="button" data-action="new-report">New Report</button>
       <button class="ghost-button" type="button" data-action="save-progress">Save Current</button>
+      <button class="ghost-button" type="button" data-action="upload-cloud-library">Upload Changes</button>
       <button class="ghost-button" type="button" data-action="refresh-cloud-library">Refresh Cloud</button>
       <button class="ghost-button" type="button" data-action="export-current-report">Save PDF + Photos</button>
     </div>
@@ -2161,6 +2162,13 @@ document.addEventListener("click", async (event) => {
     render();
     if (fromMobileMenu) closeOverlays();
     showToast("Progress saved.");
+    return;
+  }
+
+  if (action === "upload-cloud-library") {
+    await refreshSyncSummary(Boolean(window.TrueViewSync?.isConfigured() && navigator.onLine), { pull: false });
+    renderLibraryDrawer();
+    showToast(navigator.onLine ? "Local changes uploaded." : "Offline - upload will wait.");
     return;
   }
 
